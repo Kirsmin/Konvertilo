@@ -7,9 +7,11 @@ type EngineState = 'idle' | 'loading' | 'ready' | 'error'
 
 // wasm 核心超过 Cloudflare Pages 25MB 限制，改从 npmmirror CDN 拉取，
 // 版本需与 package.json 中 @ffmpeg/core 保持一致。
+// Vite 将 worker 构建为 module 类型，importScripts 不可用，
+// 必须走 esm 构建（带 export default），umd 会报 "failed to import ffmpeg-core.js"。
 const CORE_VERSION = '0.12.10'
-const CORE_JS = `https://registry.npmmirror.com/@ffmpeg/core/${CORE_VERSION}/files/dist/umd/ffmpeg-core.js`
-const CORE_WASM = `https://registry.npmmirror.com/@ffmpeg/core/${CORE_VERSION}/files/dist/umd/ffmpeg-core.wasm`
+const CORE_JS = `https://registry.npmmirror.com/@ffmpeg/core/${CORE_VERSION}/files/dist/esm/ffmpeg-core.js`
+const CORE_WASM = `https://registry.npmmirror.com/@ffmpeg/core/${CORE_VERSION}/files/dist/esm/ffmpeg-core.wasm`
 
 /** 模块级单例：整个应用只加载一次引擎 */
 const state = ref<EngineState>('idle')
