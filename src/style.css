@@ -1,0 +1,213 @@
+/* ============ 主题变量：黑为主体、偏一点点墨绿；auto 跟随系统 ============ */
+:root {
+  --font: 'Maple Mono', 'Maple Mono NF', ui-monospace, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+  --bg: #f1f2ee;
+  --card: #fafaf7;
+  --ink: #1c211d;
+  --muted: #68726a;
+  --line: #ccd1c9;
+  --dash: #98a29a;
+  --accent: #2e4636;
+  --sel: #e9ede8;
+  --err: #b0563f;
+}
+
+body[data-theme='dark'] {
+  --bg: #0a0c0b;
+  --card: #101412;
+  --ink: #d9ded6;
+  --muted: #87918a;
+  --line: #262c28;
+  --dash: #525c54;
+  --accent: #a9cdb6;
+  --sel: #1a201c;
+  --err: #d98b7a;
+}
+
+@media (prefers-color-scheme: dark) {
+  body[data-theme='auto'] {
+    --bg: #0a0c0b;
+    --card: #101412;
+    --ink: #d9ded6;
+    --muted: #87918a;
+    --line: #262c28;
+    --dash: #525c54;
+    --accent: #a9cdb6;
+    --sel: #1a201c;
+    --err: #d98b7a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font: 14px/1.65 var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  transition:
+    background 0.2s,
+    color 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+.row {
+  touch-action: manipulation;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* ============ 任何按钮/链接：虚线底、不换颜色 ============ */
+.btn {
+  color: inherit;
+  border-bottom: 1px dashed var(--dash);
+  padding: 0 1px;
+}
+
+.btn:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+a.btn {
+  text-decoration: none;
+}
+
+/* 下载引擎时隐藏所有操作入口 */
+body[data-status='downloading'] .actionable {
+  display: none;
+}
+
+/* ---- 分区 ---- */
+.pane {
+  padding: 16px 0 6px;
+  position: relative;
+}
+
+.pane + .pane {
+  border-top: 1px solid var(--line);
+}
+
+.pane-head {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+}
+
+.pane-title {
+  font-weight: 400;
+}
+
+.count {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.start {
+  margin-left: auto;
+  font-size: 13px;
+}
+
+.rows {
+  list-style: none;
+}
+
+.empty {
+  padding: 22px 4px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (min-width: 721px) {
+  body {
+    font-size: 16px;
+  }
+
+  .pane {
+    padding: 20px 0 8px;
+  }
+
+  .pane-head {
+    gap: 16px;
+    padding-bottom: 10px;
+  }
+
+  .pane-title {
+    font-size: 17px;
+  }
+
+  .count {
+    font-size: 13px;
+  }
+
+  .toolbar {
+    gap: 16px;
+    font-size: 14px;
+  }
+
+  .start {
+    font-size: 14px;
+  }
+
+  .empty {
+    padding: 28px 4px;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 720px) {
+  /* 触控目标放大：视觉不变，命中区外扩 */
+  .btn {
+    position: relative;
+  }
+
+  .btn::after {
+    content: '';
+    position: absolute;
+    left: -6px;
+    right: -6px;
+    top: -7px;
+    bottom: -5px;
+  }
+
+  .pane-head {
+    gap: 6px 12px;
+  }
+
+  /* 输入区头部：标题行 = 标题 + 开始转换（钉死右侧）；工具栏整体第二行 */
+  #inHead .pane-title {
+    order: 1;
+  }
+
+  #inHead .start {
+    order: 2;
+    margin-left: auto;
+  }
+
+  #inHead .toolbar {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
