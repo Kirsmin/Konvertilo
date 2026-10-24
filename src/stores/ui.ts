@@ -14,6 +14,8 @@ export const useUiStore = defineStore('ui', () => {
   const total = ref(0)
   const histOpen = ref(false)
   const errorText = ref('')
+  /** 尺寸等非阻断提示，黄色面板展示，不影响继续转换 */
+  const warnText = ref('')
 
   function toggleHistory() {
     histOpen.value = !histOpen.value
@@ -25,6 +27,10 @@ export const useUiStore = defineStore('ui', () => {
     if (status.value === 'error') status.value = 'idle'
   }
 
+  function dismissWarn() {
+    warnText.value = ''
+  }
+
   return {
     theme,
     status,
@@ -33,7 +39,9 @@ export const useUiStore = defineStore('ui', () => {
     total,
     histOpen,
     errorText,
+    warnText,
     toggleHistory,
     dismissError,
+    dismissWarn,
   }
 })

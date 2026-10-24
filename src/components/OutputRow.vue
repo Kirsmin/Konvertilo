@@ -1,16 +1,23 @@
 <script setup lang="ts">
-import type { OutputItem } from '../types'
+import { computed } from 'vue'
+import type { ConverterConfig, OutputItem } from '../types'
 import { useFlash } from '../composables/useFlash'
+import { isQualityApplicable } from '../utils/ffmpegArgs'
 import SelectRow from './SelectRow.vue'
 
 const props = defineProps<{
   output: OutputItem
+  converter: ConverterConfig
   selected: boolean
 }>()
 
 const emit = defineEmits<{
   toggle: []
 }>()
+
+const qualityApplicable = computed(() =>
+  isQualityApplicable(props.converter, props.output.format, props.output.encoder),
+)
 
 const { text: downloadLabel, flash: flashDownloaded } = useFlash('↓ 下载', '✓ 已下载')
 
@@ -49,7 +56,10 @@ function download() {
     <div class="line2" :data-fmt="output.format">
       <span class="meta">{{ output.duration }}</span>
       <span class="meta">{{ output.sizeLabel }}</span>
-      <span class="meta">{{ output.quality }} · 编码器 {{ output.encoder }}</span>
+      <span v-if="qualityApplicable" class="meta">
+        {{ output.quality }} · 编码器 {{ output.encoder }}
+      </span>
+      <span v-else class="meta">编码器 {{ output.encoder }}</span>
     </div>
   </SelectRow>
 </template>

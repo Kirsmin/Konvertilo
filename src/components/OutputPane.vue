@@ -42,6 +42,7 @@ const allSelected = computed(() => outputsStore.allSelected(props.converter.path
         v-for="output in outputs"
         :key="output.id"
         :output="output"
+        :converter="converter"
         :selected="selectedIds.includes(output.id)"
         @toggle="outputsStore.toggleSelected(output.id)"
       />

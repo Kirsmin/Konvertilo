@@ -235,6 +235,22 @@ onBeforeUnmount(() => {
       </div>
       <pre class="errbody">{{ ui.errorText }}</pre>
     </div>
+
+    <div v-if="status !== 'error' && ui.warnText" class="warnbox">
+      <div class="warnhead">
+        <span>提示</span>
+        <button
+          type="button"
+          class="btn warnclose"
+          title="关闭提示"
+          aria-label="关闭提示"
+          @click="ui.dismissWarn()"
+        >
+          ✗
+        </button>
+      </div>
+      <pre class="warnbody">{{ ui.warnText }}</pre>
+    </div>
   </header>
 </template>
 
@@ -354,20 +370,30 @@ onBeforeUnmount(() => {
   color: var(--err);
 }
 
-.errbox {
+.errbox,
+.warnbox {
   grid-column: 1 / -1;
   margin-top: 10px;
-  border: 1px dashed var(--err);
+  border: 1px dashed currentColor;
+}
+
+.errbox {
   color: var(--err);
 }
 
-.errhead {
+.warnbox {
+  color: var(--warn);
+  margin-top: 8px;
+}
+
+.errhead,
+.warnhead {
   display: flex;
   gap: 10px;
   align-items: baseline;
   justify-content: space-between;
   padding: 4px 8px 3px;
-  border-bottom: 1px dashed var(--err);
+  border-bottom: 1px dashed currentColor;
   font-size: 12px;
 }
 
@@ -377,12 +403,14 @@ onBeforeUnmount(() => {
   align-items: baseline;
 }
 
-.errclose {
+.errclose,
+.warnclose {
   padding: 0 3px;
   line-height: 1.2;
 }
 
-.errbody {
+.errbody,
+.warnbody {
   margin: 0;
   padding: 7px 8px;
   max-height: 132px;
@@ -478,18 +506,21 @@ onBeforeUnmount(() => {
   }
 
   /* 手机上错误面板限高，避免一条报错刷满整屏 */
-  .errbox {
+  .errbox,
+  .warnbox {
     order: 4;
     flex-basis: 100%;
     margin-top: 8px;
   }
 
-  .errhead {
+  .errhead,
+  .warnhead {
     padding: 3px 7px;
     font-size: 11px;
   }
 
-  .errbody {
+  .errbody,
+  .warnbody {
     max-height: 88px;
     padding: 6px 7px;
     font-size: 11px;

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { ConverterConfig, Task } from '../types'
 import { getEncodersForTarget } from '../config/converters'
+import { isQualityApplicable } from '../utils/ffmpegArgs'
 import { useTasksStore } from '../stores/tasks'
 import MiniSelect from './MiniSelect.vue'
 import SelectRow from './SelectRow.vue'
@@ -19,6 +20,15 @@ const emit = defineEmits<{
 const tasksStore = useTasksStore()
 const encoderOptions = computed(() =>
   getEncodersForTarget(props.converter, props.task.targetFormat),
+)
+
+// 该编码器不吃 CRF / 码率时，质量只作为静态文本展示
+const qualityApplicable = computed(() =>
+  isQualityApplicable(
+    props.converter,
+    props.task.targetFormat,
+    props.task.encoder,
+  ),
 )
 
 const QUALITY_TOP_HINT = '↑ 质量最好 / 体积最大'
@@ -154,7 +164,7 @@ function onNameBlur(event: FocusEvent) {
         title="目标格式"
         @change="tasksStore.updateTargetFormat(task.id, $event)"
       />
-      <span>
+      <span v-if="qualityApplicable">
         质量
         <MiniSelect
           :model-value="task.quality"
@@ -165,6 +175,7 @@ function onNameBlur(event: FocusEvent) {
           @change="tasksStore.updateQuality(task.id, $event)"
         />
       </span>
+      <span v-else class="quality-fixed">质量 不适用</span>
       <span v-if="encoderOptions.length > 1" class="encoder-select">
         编码器
         <MiniSelect
@@ -240,6 +251,10 @@ function onNameBlur(event: FocusEvent) {
 }
 
 .encoder-fixed {
+  white-space: nowrap;
+}
+
+.quality-fixed {
   white-space: nowrap;
 }
 

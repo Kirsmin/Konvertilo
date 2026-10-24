@@ -83,7 +83,7 @@ export function useConversion(converter: Ref<ConverterConfig>) {
         ui.done += 1
       } catch (reason) {
         if (isAbort(reason) || token !== runToken) return
-        failed.push(`${task.name}：${describeError(reason)}`)
+        failed.push(`${task.name}: ${describeError(reason)}`)
 
         // 引擎已被 wasm trap 重置：后面的任务不可能成功，直接给出明确提示
         if (engineState.value !== 'ready') {
@@ -96,6 +96,7 @@ export function useConversion(converter: Ref<ConverterConfig>) {
     // 失败必须进入 error 态：status 回到 idle 时错误文本没有地方可显示
     if (failed.length) {
       ui.errorText = failed.join('\n')
+      ui.warnText = ''
       ui.status = 'error'
       return
     }
@@ -121,6 +122,7 @@ export function useConversion(converter: Ref<ConverterConfig>) {
     // 引擎加载失败：任务保留，进入错误态以沿用「复制错误信息」
     if (engineState.value !== 'ready') {
       ui.errorText = engineError.value || 'ffmpeg.wasm 引擎加载失败'
+      ui.warnText = ''
       ui.status = 'error'
       return
     }

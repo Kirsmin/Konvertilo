@@ -55,12 +55,29 @@ const LOSSLESS_AUDIO_ENCODERS = new Set([
 /** 主流编码器统一转 yuv420p，避免 10bit / 带 alpha 的源产出无法播放的文件 */
 const YUV420P_ENCODERS = new Set(['libx264', 'libvpx', 'mpeg4'])
 
+/** 只有这些编码器接受 -crf；其余编码器的质量下拉框应显示为不可编辑 */
+const CRF_ENCODERS = new Set(['libx264', 'libvpx'])
+
+/**
+ * 质量参数是否对该编码器生效。
+ * 不生效时界面只显示静态文本（没有虚线下划线），避免给出无效选项。
+ */
+export function isQualityApplicable(
+  converter: ConverterConfig,
+  targetFormat: string,
+  encoder: string,
+): boolean {
+  if (converter.to === 'Audio') return !LOSSLESS_AUDIO_ENCODERS.has(encoder)
+  if (targetFormat === 'GIF') return false
+  return CRF_ENCODERS.has(encoder)
+}
+
 /**
  * 按转换器类型与任务参数生成 ffmpeg 参数（不含 -i 输入与输出名）。
  * - 视频->音频：丢弃视频流，按编码器 + 码率输出音频（无损编码器不带码率）
  * - 音频->音频：按编码器 + 码率转码
- * - 视频->视频：按编码器 + CRF 转码；目标为 GIF 时固定 gif 编码器，
- *   并限制帧率与宽度（否则 6 秒 640x360 的 GIF 就有 3MB+）
+ * - 视频->视频：按编码器 + CRF 转码（不支持 CRF 的编码器不带该参数）；
+ *   目标为 GIF 时固定 gif 编码器，并限制帧率与宽度（否则 6 秒 640x360 的 GIF 就有 3MB+）
  */
 export function buildFFmpegArgs(converter: ConverterConfig, task: Task): string[] {
   if (converter.to === 'Audio') {
@@ -83,7 +100,10 @@ export function buildFFmpegArgs(converter: ConverterConfig, task: Task): string[
     ]
   }
 
-  const args = ['-c:v', task.encoder, '-crf', String(parseCrf(task.quality))]
+  const args = ['-c:v', task.encoder]
+  if (CRF_ENCODERS.has(task.encoder)) {
+    args.push('-crf', String(parseCrf(task.quality)))
+  }
   if (YUV420P_ENCODERS.has(task.encoder)) {
     args.push('-pix_fmt', 'yuv420p')
   }

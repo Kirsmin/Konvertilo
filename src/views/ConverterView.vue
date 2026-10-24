@@ -7,6 +7,7 @@ import { useUiStore } from '../stores/ui'
 import { useFFmpeg } from '../composables/useFFmpeg'
 import { useConversion } from '../composables/useConversion'
 import { fileExtension, isFileAccepted } from '../utils/format'
+import { OVERSIZE_HINT, recommendedFileSize } from '../utils/limit'
 import ConverterHeader from '../components/ConverterHeader.vue'
 import InputPane from '../components/InputPane.vue'
 import OutputPane from '../components/OutputPane.vue'
@@ -26,6 +27,8 @@ const ui = useUiStore()
 
 /** 拖入不支持的文件时，交给输入区中央显示，不使用顶部提示 */
 const skipNotice = ref('')
+/** 按当前设备的可用内存 / 堆上限估算；只用于提示，不阻止转换 */
+const sizeLimit = recommendedFileSize()
 
 const { ensureLoaded } = useFFmpeg()
 const { startConvert, stop } = useConversion(converter)
@@ -36,6 +39,7 @@ watch(
     tasksStore.ensureSeeded(value.path)
     outputsStore.ensureSeeded(value.path)
     skipNotice.value = ''
+    ui.warnText = ''
   },
   { immediate: true },
 )
@@ -69,6 +73,12 @@ function handleFiles(files: File[]) {
 
   skipNotice.value = skipped.length ? describeSkipped(skipped) : ''
   if (accepted.length === 0) return
+
+  // 只提示，不拦截：真的跑不动时 ffmpeg 会报「文件尺寸过大」
+  const oversized = accepted.filter((file) => file.size > sizeLimit)
+  ui.warnText = oversized
+    .map((file) => `${file.name}: ${OVERSIZE_HINT}`)
+    .join('\n')
 
   // 真正选择文件之后才下载 ffmpeg 核心
   void ensureLoaded()

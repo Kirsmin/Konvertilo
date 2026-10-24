@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import type { FFmpeg } from '@ffmpeg/ffmpeg'
 import { useUiStore } from '../stores/ui'
 import { clampProgress, fileExtension } from '../utils/format'
+import { recommendedFileSize } from '../utils/limit'
 
 type EngineState = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -204,6 +205,19 @@ function isFatalWasmError(reason: unknown): boolean {
   )
 }
 
+/** 文件超过设备能力时，ffmpeg / 浏览器给出的典型报错 */
+const SIZE_FAILURE = new RegExp(
+  [
+    'File could not be read',
+    'Cannot enlarge memory',
+    'Array buffer allocation failed',
+    'out of memory',
+    'No space left on device',
+    'Invalid (typed )?array length',
+  ].join('|'),
+  'i',
+)
+
 /** 把常见 ffmpeg 报错翻译成一句能看懂的话，原始日志仍附在后面 */
 function friendlyFailure(log: string, code: number): string {
   if (log.includes('does not contain any stream')) {
@@ -281,6 +295,10 @@ export async function transcode(options: TranscodeOptions): Promise<Blob> {
     )
     if (code !== 0) {
       const log = tail()
+      // 尺寸问题只给结论，日志里也就是一句 Code=-1，没有诊断价值
+      if (SIZE_FAILURE.test(log)) {
+        throw new Error('文件尺寸过大')
+      }
       const hint = friendlyFailure(log, code)
       const lines = log.split('\n').length
       throw new Error(`${hint}\n--- ffmpeg 日志（末尾 ${lines} 行）---\n${log}`)
@@ -299,9 +317,17 @@ export async function transcode(options: TranscodeOptions): Promise<Blob> {
     ) as ArrayBuffer
     return new Blob([buffer], { type: options.mimeType ?? 'application/octet-stream' })
   } catch (reason) {
+    const detail = reason instanceof Error ? reason.message : String(reason)
+    // 浏览器侧分配不出 ArrayBuffer 也归到尺寸问题
+    if (!options.signal?.aborted && SIZE_FAILURE.test(detail)) {
+      throw new Error('文件尺寸过大')
+    }
     // 成功的 exec 也可能在收尾时打印 Aborted()，只对真正的 wasm trap 重建实例
     if (!options.signal?.aborted && isFatalWasmError(reason)) {
       resetEngine()
+      if (options.file.size > recommendedFileSize()) {
+        throw new Error('文件尺寸过大')
+      }
       throw new Error(
         '引擎在这段素材上崩溃了（wasm 内存越界或编码器不可用）。' +
           '引擎已自动重置，可直接重试，或换一个编码器 / 更小的文件。',

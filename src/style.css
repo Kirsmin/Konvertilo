@@ -11,6 +11,7 @@
   --accent: #2e4636;
   --sel: #e9ede8;
   --err: #b0563f;
+  --warn: #8b6413;
 }
 
 body[data-theme='dark'] {
@@ -23,6 +24,7 @@ body[data-theme='dark'] {
   --accent: #a9cdb6;
   --sel: #1a201c;
   --err: #d98b7a;
+  --warn: #d9b56b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -36,6 +38,7 @@ body[data-theme='dark'] {
     --accent: #a9cdb6;
     --sel: #1a201c;
     --err: #d98b7a;
+    --warn: #d9b56b;
   }
 }
 
