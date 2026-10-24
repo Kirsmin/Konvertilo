@@ -29,15 +29,28 @@ export function useConversion(converter: Ref<ConverterConfig>) {
   const outputsStore = useOutputsStore()
   const historyStore = useHistoryStore()
   const ui = useUiStore()
-  const { ensureLoaded, transcode, state: engineState, error: engineError } = useFFmpeg()
+  const {
+    ensureLoaded,
+    resetEngine,
+    transcode,
+    state: engineState,
+    error: engineError,
+  } = useFFmpeg()
 
   let runToken = 0
   let abortController: AbortController | null = null
 
+  /**
+   * 中止当前批次。仅 abort 只会 reject 掉客户端 Promise，
+   * 后台 worker 仍会把当前文件编码完，所以必须同时销毁实例。
+   */
   function stop() {
+    const running = abortController !== null
     runToken += 1
     abortController?.abort()
     abortController = null
+    if (running) resetEngine()
+    ui.progress = 0
     if (ui.status === 'processing') {
       ui.status = 'idle'
     }
@@ -71,11 +84,20 @@ export function useConversion(converter: Ref<ConverterConfig>) {
       } catch (reason) {
         if (isAbort(reason) || token !== runToken) return
         failed.push(`${task.name}：${describeError(reason)}`)
+
+        // 引擎已被 wasm trap 重置：后面的任务不可能成功，直接给出明确提示
+        if (engineState.value !== 'ready') {
+          failed.push('引擎已重置，剩余任务未执行，请重新点击开始转换。')
+          break
+        }
       }
     }
 
+    // 失败必须进入 error 态：status 回到 idle 时错误文本没有地方可显示
     if (failed.length) {
       ui.errorText = failed.join('\n')
+      ui.status = 'error'
+      return
     }
     ui.status = 'idle'
   }

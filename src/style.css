@@ -201,7 +201,7 @@ body[data-status='downloading'] .actionable {
     order: 1;
   }
 
-  #inHead .start {
+  #inHead .actions {
     order: 2;
     margin-left: auto;
   }

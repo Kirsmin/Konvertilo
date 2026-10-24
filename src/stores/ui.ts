@@ -19,6 +19,12 @@ export const useUiStore = defineStore('ui', () => {
     histOpen.value = !histOpen.value
   }
 
+  /** 关闭错误面板：清空文本并回到空闲态 */
+  function dismissError() {
+    errorText.value = ''
+    if (status.value === 'error') status.value = 'idle'
+  }
+
   return {
     theme,
     status,
@@ -28,5 +34,6 @@ export const useUiStore = defineStore('ui', () => {
     histOpen,
     errorText,
     toggleHistory,
+    dismissError,
   }
 })

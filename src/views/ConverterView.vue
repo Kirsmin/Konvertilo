@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { CONVERTERS, getConverter } from '../config/converters'
 import { useTasksStore } from '../stores/tasks'
 import { useOutputsStore } from '../stores/outputs'
+import { useUiStore } from '../stores/ui'
 import { useFFmpeg } from '../composables/useFFmpeg'
 import { useConversion } from '../composables/useConversion'
-import { isFileAccepted } from '../utils/format'
+import { fileExtension, isFileAccepted } from '../utils/format'
 import ConverterHeader from '../components/ConverterHeader.vue'
 import InputPane from '../components/InputPane.vue'
 import OutputPane from '../components/OutputPane.vue'
@@ -21,22 +22,52 @@ const converter = computed(
 
 const tasksStore = useTasksStore()
 const outputsStore = useOutputsStore()
+const ui = useUiStore()
+
+/** 拖入不支持的文件时，交给输入区中央显示，不使用顶部提示 */
+const skipNotice = ref('')
 
 const { ensureLoaded } = useFFmpeg()
-const { startConvert } = useConversion(converter)
+const { startConvert, stop } = useConversion(converter)
 
 watch(
   converter,
   (value) => {
     tasksStore.ensureSeeded(value.path)
     outputsStore.ensureSeeded(value.path)
+    skipNotice.value = ''
   },
   { immediate: true },
 )
 
+/** 形如「> ! 不支持 .mp3 格式，已跳过 1 个文件 ! <」 */
+function describeSkipped(skipped: File[]): string {
+  const extensions = [
+    ...new Set(skipped.map((file) => fileExtension(file.name)).filter(Boolean)),
+  ]
+  const clause = extensions.length
+    ? `不支持 ${extensions.slice(0, 3).map((ext) => `.${ext}`).join('、')} 格式`
+    : '不支持该文件格式'
+  return `> ! ${clause}，已跳过 ${skipped.length} 个文件 ! <`
+}
+
 function handleFiles(files: File[]) {
   const config = converter.value
-  const accepted = files.filter((file) => isFileAccepted(file, config))
+  const accepted: File[] = []
+  const skipped: File[] = []
+
+  for (const file of files) {
+    if (isFileAccepted(file, config)) accepted.push(file)
+    else skipped.push(file)
+  }
+
+  // 重新选文件时清掉上一轮的错误，避免「错误」状态一直挂着
+  if (ui.status === 'error') {
+    ui.status = 'idle'
+    ui.errorText = ''
+  }
+
+  skipNotice.value = skipped.length ? describeSkipped(skipped) : ''
   if (accepted.length === 0) return
 
   // 真正选择文件之后才下载 ffmpeg 核心
@@ -48,7 +79,13 @@ function handleFiles(files: File[]) {
 <template>
   <div class="card">
     <ConverterHeader :converter="converter" />
-    <InputPane :converter="converter" @files="handleFiles" @start="startConvert" />
+    <InputPane
+      :converter="converter"
+      :skip-notice="skipNotice"
+      @files="handleFiles"
+      @start="startConvert"
+      @stop="stop"
+    />
     <OutputPane :converter="converter" />
 
     <footer>

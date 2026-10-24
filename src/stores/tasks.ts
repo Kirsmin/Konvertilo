@@ -9,6 +9,14 @@ import { probeDurationSafe } from '../utils/media'
 /**
  * 输入任务队列。任务按转换器路径分组，切换转换器时互不干扰。
  */
+
+/** 把输出名对齐到目标扩展名；没有扩展名时补上 */
+function withExtension(name: string, extension: string): string {
+  return fileExtension(name)
+    ? replaceExtension(name, extension)
+    : `${name}.${extension.toLowerCase()}`
+}
+
 export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref<Task[]>([])
   const selection = usePathSelection(tasks)
@@ -77,9 +85,9 @@ export const useTasksStore = defineStore('tasks', () => {
     const task = tasks.value.find((item) => item.id === id)
     if (!task) return
     task.targetFormat = targetFormat
-    if (!task.outputNameTouched) {
-      task.outputName = replaceExtension(task.name, targetFormat)
-    }
+    // 输出名必须跟着目标格式走：否则「改成 FLAC」后仍叫 xxx.mp3，
+    // ffmpeg 会按扩展名选 mp3 封装器，直接产出 0 字节文件。
+    task.outputName = withExtension(task.outputName, targetFormat)
     const converter = getConverterByPath(task.path)
     if (converter) {
       const encoders = getEncodersForTarget(converter, targetFormat)
@@ -103,7 +111,10 @@ export const useTasksStore = defineStore('tasks', () => {
     const task = tasks.value.find((item) => item.id === id)
     const next = name.trim()
     if (!task || !next) return
-    task.outputName = next
+    // 用户只写主文件名时自动补当前目标格式的扩展名
+    task.outputName = fileExtension(next)
+      ? next
+      : `${next}.${task.targetFormat.toLowerCase()}`
     task.outputNameTouched = true
   }
 

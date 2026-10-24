@@ -2,18 +2,23 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ConverterConfig } from '../types'
 import { useTasksStore } from '../stores/tasks'
+import { useUiStore } from '../stores/ui'
 import TaskRow from './TaskRow.vue'
 
 const props = defineProps<{
   converter: ConverterConfig
+  /** 不支持的文件提示，直接显示在输入区中央 */
+  skipNotice?: string
 }>()
 
 const emit = defineEmits<{
   files: [files: File[]]
   start: []
+  stop: []
 }>()
 
 const tasksStore = useTasksStore()
+const ui = useUiStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 
@@ -108,14 +113,24 @@ onBeforeUnmount(() => {
           ✗ 取消选中任务
         </button>
       </span>
-      <button
-        v-if="tasks.length"
-        type="button"
-        class="btn actionable start"
-        @click="emit('start')"
-      >
-        开始转换 -&gt;
-      </button>
+      <span class="actions">
+        <button
+          v-if="ui.status === 'processing'"
+          type="button"
+          class="btn actionable stop"
+          @click="emit('stop')"
+        >
+          ■ 停止
+        </button>
+        <button
+          v-if="tasks.length"
+          type="button"
+          class="btn actionable start"
+          @click="emit('start')"
+        >
+          开始转换 -&gt;
+        </button>
+      </span>
     </div>
 
     <ul id="inList" class="rows">
@@ -130,10 +145,18 @@ onBeforeUnmount(() => {
     </ul>
 
     <div v-if="!tasks.length" class="empty">
-      <button type="button" class="btn actionable" @click="openPicker">
+      <template v-if="skipNotice">
+        <p class="skip">{{ skipNotice }}</p>
+        <button type="button" class="btn actionable retry" @click="openPicker">
+          重新选择文件
+        </button>
+      </template>
+      <button v-else type="button" class="btn actionable" @click="openPicker">
         上传或拖入文件
       </button>
     </div>
+
+    <p v-else-if="skipNotice" class="skip list-skip">{{ skipNotice }}</p>
 
     <input
       ref="fileInput"
@@ -155,6 +178,50 @@ onBeforeUnmount(() => {
 <style scoped>
 .file-input {
   display: none;
+}
+
+.actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.actions .start {
+  margin-left: 0;
+}
+
+.stop {
+  color: var(--err);
+}
+
+.skip {
+  color: var(--err);
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+.empty .skip {
+  margin-bottom: 8px;
+}
+
+.retry {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.list-skip {
+  padding: 6px 4px 0;
+}
+
+@media (min-width: 721px) {
+  .skip {
+    font-size: 14px;
+  }
+
+  .retry {
+    font-size: 13px;
+  }
 }
 
 .drop-overlay {

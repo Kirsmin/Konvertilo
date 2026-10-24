@@ -47,8 +47,13 @@ export const AUDIO_QUALITIES = [
 export const VIDEO_QUALITIES = Array.from({ length: 52 }, (_, crf) => `CRF ${crf}`)
 
 /**
- * 编码器均取自 @ffmpeg/core 0.12.10 的实际构建（ffmpeg -encoders），
- * 并按目标容器归类，避免出现容器不支持的编码器。
+ * 编码器按目标容器归类，且只保留在 @ffmpeg/core 0.12.10（单线程 wasm）里
+ * 实测可用的组合。以下三个编码器虽然出现在该构建的 ffmpeg -encoders 里，
+ * 但实测不可用，已剔除：
+ * - libvpx-vp9：编码第 1 帧即 RuntimeError: memory access out of bounds
+ *   （-threads 1 / -b:v 0 皆无效），任何容器都崩；
+ * - libx265：不崩但极慢，2 秒 480x270 的素材编码超过 200 秒仍不结束；
+ * - mjpeg：编码第 1 帧即 memory access out of bounds（MP4/MKV/MOV/AVI 均如此）。
  */
 const AUDIO_ENCODERS_BY_TARGET: Record<string, string[]> = {
   MP3: ['libmp3lame'],
@@ -83,20 +88,16 @@ const AUDIO_ENCODERS_BY_TARGET: Record<string, string[]> = {
 }
 
 const VIDEO_ENCODERS_BY_TARGET: Record<string, string[]> = {
-  MP4: ['libx264', 'libx265', 'mpeg4', 'mpeg2video', 'mpeg1video', 'mjpeg'],
-  WEBM: ['libvpx-vp9', 'libvpx'],
+  MP4: ['libx264', 'mpeg4', 'mpeg2video', 'mpeg1video'],
+  WEBM: ['libvpx'],
   MKV: [
     'libx264',
-    'libx265',
-    'libvpx-vp9',
     'libvpx',
     'mpeg4',
     'mpeg2video',
     'mpeg1video',
     'ffv1',
     'prores_ks',
-    'mjpeg',
-    'gif',
     'huffyuv',
     'utvideo',
     'qtrle',
@@ -104,21 +105,18 @@ const VIDEO_ENCODERS_BY_TARGET: Record<string, string[]> = {
   ],
   MOV: [
     'libx264',
-    'libx265',
     'prores_ks',
     'prores_aw',
     'prores',
     'mpeg4',
     'mpeg2video',
     'mpeg1video',
-    'mjpeg',
     'qtrle',
     'png',
   ],
   AVI: [
     'libx264',
     'mpeg4',
-    'mjpeg',
     'msmpeg4v2',
     'msmpeg4',
     'wmv2',

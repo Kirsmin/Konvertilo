@@ -203,9 +203,6 @@ onBeforeUnmount(() => {
       </template>
       <template v-else-if="status === 'error'">
         <span class="er">✗</span> 错误
-        <button type="button" class="btn" @click="copyError">
-          {{ copyLabel }}
-        </button>
       </template>
       <template v-else-if="status === 'processing'">
         <span class="spin">✳︎</span> 处理中({{ done }}/{{ total }} · {{ progress }}%)
@@ -216,6 +213,27 @@ onBeforeUnmount(() => {
     <div ref="histWrap" class="hist-wrap" :class="{ open: histOpen }">
       <button type="button" class="btn" @click="toggleHistory">历史</button>
       <HistoryPopover v-if="histOpen" />
+    </div>
+
+    <div v-if="status === 'error' && ui.errorText" class="errbox">
+      <div class="errhead">
+        <span>错误详情</span>
+        <span class="erractions">
+          <button type="button" class="btn" @click="copyError">
+            {{ copyLabel }}
+          </button>
+          <button
+            type="button"
+            class="btn errclose"
+            title="关闭错误信息"
+            aria-label="关闭错误信息"
+            @click="ui.dismissError()"
+          >
+            ✗
+          </button>
+        </span>
+      </div>
+      <pre class="errbody">{{ ui.errorText }}</pre>
     </div>
   </header>
 </template>
@@ -336,6 +354,46 @@ onBeforeUnmount(() => {
   color: var(--err);
 }
 
+.errbox {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  border: 1px dashed var(--err);
+  color: var(--err);
+}
+
+.errhead {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 8px 3px;
+  border-bottom: 1px dashed var(--err);
+  font-size: 12px;
+}
+
+.erractions {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.errclose {
+  padding: 0 3px;
+  line-height: 1.2;
+}
+
+.errbody {
+  margin: 0;
+  padding: 7px 8px;
+  max-height: 132px;
+  overflow: auto;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .bar {
   display: inline-block;
   width: 10ch;
@@ -417,6 +475,24 @@ onBeforeUnmount(() => {
     justify-content: flex-start;
     white-space: normal;
     flex-wrap: wrap;
+  }
+
+  /* 手机上错误面板限高，避免一条报错刷满整屏 */
+  .errbox {
+    order: 4;
+    flex-basis: 100%;
+    margin-top: 8px;
+  }
+
+  .errhead {
+    padding: 3px 7px;
+    font-size: 11px;
+  }
+
+  .errbody {
+    max-height: 88px;
+    padding: 6px 7px;
+    font-size: 11px;
   }
 }
 </style>

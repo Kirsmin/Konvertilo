@@ -108,15 +108,22 @@ async function downloadBlobUrl(
   return URL.createObjectURL(new Blob([buffer], { type: mimeType }))
 }
 
-function releaseObjectUrls() {
-  if (coreObjectUrl) {
-    URL.revokeObjectURL(coreObjectUrl)
-    coreObjectUrl = ''
-  }
-  if (wasmObjectUrl) {
-    URL.revokeObjectURL(wasmObjectUrl)
-    wasmObjectUrl = ''
-  }
+/**
+ * 核心只下载一次：blob URL 常驻页面生命周期。
+ * 引擎崩溃后重建实例时可以直接复用，不必再拉 32MB。
+ */
+async function ensureCoreUrls() {
+  if (coreObjectUrl && wasmObjectUrl) return
+
+  coreObjectUrl = await downloadBlobUrl(CORE_JS, 'text/javascript', (event) => {
+    setProgress(rangeProgress(0, 4, event.received, event.total))
+  })
+  setProgress(4)
+
+  wasmObjectUrl = await downloadBlobUrl(CORE_WASM, 'application/wasm', (event) => {
+    setProgress(rangeProgress(4, 98, event.received, event.total))
+  })
+  setProgress(99)
 }
 
 async function loadEngine(): Promise<void> {
@@ -136,17 +143,7 @@ async function loadEngine(): Promise<void> {
     // 仅在真正需要时加载 ffmpeg 封装，首屏不包含任何 wasm 代码。
     const { FFmpeg: FFmpegCtor } = await import('@ffmpeg/ffmpeg')
 
-    releaseObjectUrls()
-
-    coreObjectUrl = await downloadBlobUrl(CORE_JS, 'text/javascript', (event) => {
-      setProgress(rangeProgress(0, 4, event.received, event.total))
-    })
-    setProgress(4)
-
-    wasmObjectUrl = await downloadBlobUrl(CORE_WASM, 'application/wasm', (event) => {
-      setProgress(rangeProgress(4, 98, event.received, event.total))
-    })
-    setProgress(99)
+    await ensureCoreUrls()
 
     const ffmpeg = new FFmpegCtor()
     await ffmpeg.load({ coreURL: coreObjectUrl, wasmURL: wasmObjectUrl })
@@ -160,7 +157,6 @@ async function loadEngine(): Promise<void> {
   } catch (reason) {
     state.value = 'error'
     error.value = normalizeError(reason)
-    releaseObjectUrls()
     if (!silent) {
       ui.errorText = error.value
       ui.status = 'error'
@@ -180,6 +176,51 @@ function ensureLoaded(): Promise<void> {
   return loadPromise
 }
 
+/**
+ * 销毁当前实例（wasm trap 之后实例已不可用）。
+ * 核心 blob URL 保留，下一次 ensureLoaded 只会重新实例化，不会重新下载。
+ */
+function resetEngine() {
+  if (instance) {
+    try {
+      instance.terminate()
+    } catch {
+      // 忽略终止失败
+    }
+  }
+  instance = null
+  state.value = 'idle'
+  error.value = ''
+  setProgress(0)
+}
+
+function isFatalWasmError(reason: unknown): boolean {
+  const detail = reason instanceof Error ? reason.message : String(reason)
+  return (
+    detail.includes('memory access out of bounds') ||
+    detail.includes('function signature mismatch') ||
+    detail.includes('RuntimeError') ||
+    detail.includes('unreachable')
+  )
+}
+
+/** 把常见 ffmpeg 报错翻译成一句能看懂的话，原始日志仍附在后面 */
+function friendlyFailure(log: string, code: number): string {
+  if (log.includes('does not contain any stream')) {
+    return '源文件里没有可用的流（例如视频没有音轨），无法完成该转换。'
+  }
+  if (log.includes('Invalid data found when processing input')) {
+    return '无法识别这个文件，可能已损坏或容器不受支持。'
+  }
+  if (log.includes('Could not find tag for codec')) {
+    return '目标容器不支持所选编码器，请换一个编码器再试。'
+  }
+  if (log.includes('No space left on device')) {
+    return 'wasm 虚拟磁盘空间不足，文件可能过大。'
+  }
+  return `ffmpeg 返回失败（退出码 ${code}）。`
+}
+
 function getFFmpeg(): FFmpeg | null {
   return instance
 }
@@ -196,9 +237,17 @@ export interface TranscodeOptions {
 
 /**
  * 真实 wasm 转码：写入输入 -> exec -> 读回输出 -> 清理临时文件。
+ *
+ * 关键点：
+ * - exec 返回的是退出码，非 0 必须当作失败，否则 ffmpeg 报错时会留下 0 字节 /
+ *   半截文件，界面却显示「转换成功」；
+ * - 收集 ffmpeg 日志尾部拼进错误信息，用户点「复制错误信息」就能拿到真正原因；
+ * - wasm trap（内存越界等）之后实例状态不可靠，此时直接 reset，下一次自动重建，
+ *   否则后续每次转换都可能静默失败。
  */
 export async function transcode(options: TranscodeOptions): Promise<Blob> {
-  if (!instance || state.value !== 'ready') {
+  const ffmpeg = instance
+  if (!ffmpeg || state.value !== 'ready') {
     throw new Error('ffmpeg.wasm 引擎尚未就绪')
   }
   if (options.signal?.aborted) {
@@ -208,35 +257,71 @@ export async function transcode(options: TranscodeOptions): Promise<Blob> {
   const { fetchFile } = await import('@ffmpeg/util')
   const extension = fileExtension(options.file.name) || 'input'
   const inputName = `input.${extension}`
+  const logs: string[] = []
+  const onLog = ({ message }: { message: string }) => {
+    logs.push(message)
+    if (logs.length > 200) logs.shift()
+    // 本地开发时把 ffmpeg 原始输出打到控制台，方便定位编码器/参数问题
+    if (import.meta.env.DEV) console.debug('[ffmpeg]', message)
+  }
   const onProgress = ({ progress: value }: { progress: number }) => {
     options.onProgress?.(Math.max(0, Math.min(1, value)))
   }
-  instance.on('progress', onProgress)
+  const tail = () => logs.slice(-12).join('\n')
+
+  ffmpeg.on('log', onLog)
+  ffmpeg.on('progress', onProgress)
 
   try {
-    await instance.writeFile(inputName, await fetchFile(options.file))
-    await instance.exec(['-i', inputName, ...options.args, options.outputName], undefined, {
-      signal: options.signal,
-    })
-    const data = await instance.readFile(options.outputName)
+    await ffmpeg.writeFile(inputName, await fetchFile(options.file))
+    const code = await ffmpeg.exec(
+      ['-i', inputName, ...options.args, options.outputName],
+      undefined,
+      { signal: options.signal },
+    )
+    if (code !== 0) {
+      const log = tail()
+      const hint = friendlyFailure(log, code)
+      const lines = log.split('\n').length
+      throw new Error(`${hint}\n--- ffmpeg 日志（末尾 ${lines} 行）---\n${log}`)
+    }
+
+    const data = await ffmpeg.readFile(options.outputName)
     const bytes =
       typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data)
+    if (bytes.byteLength === 0) {
+      const log = tail()
+      throw new Error(`输出文件为空，转换没有真正完成。\n--- ffmpeg 日志 ---\n${log}`)
+    }
     const buffer = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength,
     ) as ArrayBuffer
     return new Blob([buffer], { type: options.mimeType ?? 'application/octet-stream' })
-  } finally {
-    instance.off('progress', onProgress)
-    try {
-      await instance.deleteFile(inputName)
-    } catch {
-      // 忽略清理失败
+  } catch (reason) {
+    // 成功的 exec 也可能在收尾时打印 Aborted()，只对真正的 wasm trap 重建实例
+    if (!options.signal?.aborted && isFatalWasmError(reason)) {
+      resetEngine()
+      throw new Error(
+        '引擎在这段素材上崩溃了（wasm 内存越界或编码器不可用）。' +
+          '引擎已自动重置，可直接重试，或换一个编码器 / 更小的文件。',
+      )
     }
-    try {
-      await instance.deleteFile(options.outputName)
-    } catch {
-      // 忽略清理失败
+    throw reason
+  } finally {
+    ffmpeg.off('progress', onProgress)
+    ffmpeg.off('log', onLog)
+    if (instance === ffmpeg) {
+      try {
+        await ffmpeg.deleteFile(inputName)
+      } catch {
+        // 忽略清理失败
+      }
+      try {
+        await ffmpeg.deleteFile(options.outputName)
+      } catch {
+        // 忽略清理失败
+      }
     }
   }
 }
@@ -248,6 +333,7 @@ export function useFFmpeg() {
     progress,
     error,
     ensureLoaded,
+    resetEngine,
     getFFmpeg,
     transcode,
   }

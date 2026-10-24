@@ -5,7 +5,7 @@ const MB = 1024 * 1024
 const GB = 1024 * 1024 * 1024
 
 export function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0KB'
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0B'
   if (bytes < KB) return `${Math.max(1, Math.round(bytes))}B`
   if (bytes < MB) return `${Math.max(1, Math.round(bytes / KB))}KB`
   if (bytes < GB) return `${Math.max(1, Math.round(bytes / MB))}MB`
