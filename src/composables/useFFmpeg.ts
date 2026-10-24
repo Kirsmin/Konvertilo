@@ -46,6 +46,68 @@ function rangeProgress(
   return Math.round(start + (end - start) * ratio)
 }
 
+interface DownloadProgress {
+  received: number
+  total: number
+}
+
+/**
+ * 下载远程核心并生成 blob URL。
+ *
+ * 不用 @ffmpeg/util 的 toBlobURL：它的进度实现拿 Content-Length 校验收到的
+ * 字节数，但 CDN 缓存命中后响应是 gzip/br 压缩的，Content-Length 是压缩后
+ * 大小（跨域请求还读不到 Content-Encoding），校验必然失败；失败分支又会再次
+ * 读取同一个 response，抛出 "Response.arrayBuffer: Body has already been consumed."。
+ * 这里只消费一次响应体，进度按已收字节估算，不做长度相等校验。
+ */
+async function downloadBlobUrl(
+  url: string,
+  mimeType: string,
+  onProgress?: (event: DownloadProgress) => void,
+): Promise<string> {
+  const response = await fetch(url)
+  if (!response.ok) {
+    throw new Error(`下载核心失败：HTTP ${response.status} ${url}`)
+  }
+
+  const total = Number(response.headers.get('content-length') ?? 0)
+  const reader = onProgress && total > 0 ? response.body?.getReader() : undefined
+
+  let bytes: Uint8Array
+  if (reader) {
+    const chunks: Uint8Array[] = []
+    let received = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      chunks.push(value)
+      received += value.byteLength
+      onProgress?.({ received, total })
+    }
+    bytes = new Uint8Array(received)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+  } else {
+    bytes = new Uint8Array(await response.arrayBuffer())
+  }
+
+  // 压缩响应的 Content-Length 是压缩后大小，只能判断是否少于预期（下载被截断）
+  if (total > 0 && bytes.byteLength < total) {
+    throw new Error(`下载核心不完整：${bytes.byteLength}/${total} ${url}`)
+  }
+  onProgress?.({ received: bytes.byteLength, total: bytes.byteLength })
+
+  const buffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer
+  return URL.createObjectURL(new Blob([buffer], { type: mimeType }))
+}
+
 function releaseObjectUrls() {
   if (coreObjectUrl) {
     URL.revokeObjectURL(coreObjectUrl)
@@ -71,20 +133,17 @@ async function loadEngine(): Promise<void> {
   setProgress(0)
 
   try {
-    // 仅在真正需要时加载 ffmpeg 封装与 util，首屏不包含任何 wasm 代码。
-    const [{ FFmpeg: FFmpegCtor }, { toBlobURL }] = await Promise.all([
-      import('@ffmpeg/ffmpeg'),
-      import('@ffmpeg/util'),
-    ])
+    // 仅在真正需要时加载 ffmpeg 封装，首屏不包含任何 wasm 代码。
+    const { FFmpeg: FFmpegCtor } = await import('@ffmpeg/ffmpeg')
 
     releaseObjectUrls()
 
-    coreObjectUrl = await toBlobURL(CORE_JS, 'text/javascript', true, (event) => {
+    coreObjectUrl = await downloadBlobUrl(CORE_JS, 'text/javascript', (event) => {
       setProgress(rangeProgress(0, 4, event.received, event.total))
     })
     setProgress(4)
 
-    wasmObjectUrl = await toBlobURL(CORE_WASM, 'application/wasm', true, (event) => {
+    wasmObjectUrl = await downloadBlobUrl(CORE_WASM, 'application/wasm', (event) => {
       setProgress(rangeProgress(4, 98, event.received, event.total))
     })
     setProgress(99)
