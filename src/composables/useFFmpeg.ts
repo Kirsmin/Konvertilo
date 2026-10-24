@@ -1,15 +1,15 @@
 import { computed, ref } from 'vue'
 import type { FFmpeg } from '@ffmpeg/ffmpeg'
-// 核心文件走本地打包资源，不依赖 CDN，离线 / 弱网也能加载
-import coreJsUrl from '@ffmpeg/core?url'
-import coreWasmUrl from '@ffmpeg/core/wasm?url'
 import { useUiStore } from '../stores/ui'
 import { clampProgress, fileExtension } from '../utils/format'
 
 type EngineState = 'idle' | 'loading' | 'ready' | 'error'
 
-const CORE_JS = coreJsUrl
-const CORE_WASM = coreWasmUrl
+// wasm 核心超过 Cloudflare Pages 25MB 限制，改从 npmmirror CDN 拉取，
+// 版本需与 package.json 中 @ffmpeg/core 保持一致。
+const CORE_VERSION = '0.12.10'
+const CORE_JS = `https://registry.npmmirror.com/@ffmpeg/core/${CORE_VERSION}/files/dist/umd/ffmpeg-core.js`
+const CORE_WASM = `https://registry.npmmirror.com/@ffmpeg/core/${CORE_VERSION}/files/dist/umd/ffmpeg-core.wasm`
 
 /** 模块级单例：整个应用只加载一次引擎 */
 const state = ref<EngineState>('idle')
