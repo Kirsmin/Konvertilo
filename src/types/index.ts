@@ -4,27 +4,6 @@ export type ThemeMode = 'auto' | 'light' | 'dark'
 
 export type JobStatus = 'idle' | 'downloading' | 'error' | 'processing'
 
-export interface SampleTask {
-  name: string
-  format: string
-  size: string
-  bytes: number
-  duration: string
-  quality: string
-  encoder: string
-  targetFormat: string
-  outputName: string
-}
-
-export interface SampleOutput {
-  name: string
-  format: string
-  duration: string
-  size: string
-  quality: string
-  encoder: string
-}
-
 export interface ConverterConfig {
   /** 路由路径，形如 /Video-Audio */
   path: string
@@ -47,8 +26,6 @@ export interface ConverterConfig {
   defaultQuality: string
   /** 每种目标格式可用的编码器，均来自当前 ffmpeg.wasm 构建 */
   encodersByTarget: Record<string, string[]>
-  sampleTasks: SampleTask[]
-  sampleOutputs: SampleOutput[]
 }
 
 export interface Task {
@@ -63,7 +40,8 @@ export interface Task {
   encoder: string
   targetFormat: string
   outputName: string
-  outputNameTouched: boolean
+  /** 上一次失败的原因（首行），用于行内标记与单条重试 */
+  error?: string
   file?: File
 }
 
@@ -76,8 +54,8 @@ export interface OutputItem {
   sizeLabel: string
   quality: string
   encoder: string
-  /** 真实转换产物；示例数据无此字段，下载时走兜底提示 */
-  blob?: Blob
+  /** 真实转换产物，下载时据此生成 ObjectURL */
+  blob: Blob
 }
 
 export interface HistoryEntry {

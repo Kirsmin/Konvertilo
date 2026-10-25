@@ -1,3 +1,10 @@
+# 依赖包（需要执行安装脚本的）在 pnpm 10+ 只能写在 workspace 配置里，
+# package.json 的 pnpm.onlyBuiltDependencies 已不再被读取。
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+  - sharp
+
 minimumReleaseAgeExclude:
   - rolldown@1.2.15
   - '@oxc-project/types@0.155.0'

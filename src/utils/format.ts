@@ -60,6 +60,38 @@ export function replaceExtension(name: string, extension: string): string {
   return `${stripExtension(name)}.${extension.toLowerCase()}`
 }
 
+/** 文件系统非法字符（Windows 最严格，一并挡掉），以及控制字符 */
+const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|\u0000-\u001f]/g
+/** Windows 保留设备名，作为主文件名时会被系统拒绝 */
+const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+const MAX_FILENAME_LENGTH = 120
+
+/**
+ * 净化用户输入的输出文件名：
+ * - 去掉路径分隔符与各类非法字符，避免 `../../x.mp3` 这类输入进到 MEMFS 路径里；
+ * - 折叠 `..` 序列，去掉首尾的点与空白（隐藏文件 / 无效名）；
+ * - 截断过长的名字（保留扩展名），避开各平台的文件名长度上限。
+ */
+export function sanitizeFilename(name: string, fallback = 'output'): string {
+  const cleaned = name
+    .replace(ILLEGAL_FILENAME_CHARS, '_')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[.\s]+/, '')
+    .replace(/[\s.]+$/, '')
+
+  const extension = fileExtension(cleaned)
+  const base = extension ? stripExtension(cleaned) : cleaned
+  const safeBase = RESERVED_NAMES.test(base) ? `_${base}` : base
+
+  if (!safeBase) return fallback
+  if (safeBase.length > MAX_FILENAME_LENGTH) {
+    return extension
+      ? `${safeBase.slice(0, MAX_FILENAME_LENGTH)}.${extension}`
+      : safeBase.slice(0, MAX_FILENAME_LENGTH)
+  }
+  return extension ? `${safeBase}.${extension}` : safeBase
+}
+
 export function isFileAccepted(file: File, converter: ConverterConfig): boolean {
   const expectedMime = converter.from === 'Video' ? 'video/' : 'audio/'
   if (file.type.startsWith(expectedMime)) return true

@@ -1,0 +1,32 @@
+# Cloudflare Pages 响应头
+#
+# 纯前端 + wasm 的站点，CSP 需要放行：
+# - 'wasm-unsafe-eval'：编译 ffmpeg.wasm 模块
+# - blob:（script-src / worker-src）：ffmpeg 的 worker 与核心都以 blob URL 加载
+# - registry.npmmirror.com / cdn.jsdelivr.net / unpkg.com（connect-src）：
+#   核心 js/wasm 从这三个镜像按序回退下载
+# - Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy：开启 cross-origin
+#   isolation，多线程核心（core-mt）才能用 SharedArrayBuffer；不具备该条件
+#   （或设备核数不足）时前端自动使用单线程核心，功能不受影响。
+# - 这里用 credentialless 而非 require-corp：二者都能开启隔离、启用多线程，但
+#   credentialless 放行 no-cors 跨源请求（剥离凭据），因此 Pages 后台的 Web
+#   Analytics beacon 不会被拦截；核心 js/wasm 从三个镜像下载也不易踩 CORP/CORS 坑。
+# - static.cloudflareinsights.com / cloudflareinsights.com：Pages 后台开启的
+#   Web Analytics（平台层注入，站点代码不参与；credentialless 下可正常使用）
+
+/*
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: data: https://registry.npmmirror.com https://cdn.jsdelivr.net https://unpkg.com https://cloudflareinsights.com; worker-src 'self' blob:; manifest-src 'self'
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=()
+  X-Frame-Options: DENY
+
+# 文件名带内容哈希，可长期缓存
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# 入口 HTML 不缓存，保证发版即时生效
+/
+  Cache-Control: public, max-age=0, must-revalidate

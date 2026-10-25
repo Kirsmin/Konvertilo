@@ -1,9 +1,18 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getConverterByPath, getEncodersForTarget } from '../config/converters'
-import { usePathSelection, useSeededPaths } from '../composables/useSelection'
+import {
+  clampQualityForEncoder,
+  getConverterByPath,
+  getEncodersForTarget,
+} from '../config/converters'
+import { usePathSelection } from '../composables/useSelection'
 import type { Task } from '../types'
-import { fileExtension, formatSize, replaceExtension } from '../utils/format'
+import {
+  fileExtension,
+  formatSize,
+  replaceExtension,
+  sanitizeFilename,
+} from '../utils/format'
 import { probeDurationSafe } from '../utils/media'
 
 /**
@@ -17,35 +26,17 @@ function withExtension(name: string, extension: string): string {
     : `${name}.${extension.toLowerCase()}`
 }
 
+/** 源文件名 → 默认输出名（净化后再对齐扩展名） */
+function defaultOutputName(name: string, targetFormat: string): string {
+  return withExtension(sanitizeFilename(name, 'output'), targetFormat)
+}
+
 export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref<Task[]>([])
   const selection = usePathSelection(tasks)
-  const markSeeded = useSeededPaths()
   let nextId = 1
 
   const forPath = (path: string) => tasks.value.filter((task) => task.path === path)
-
-  function ensureSeeded(path: string) {
-    const converter = getConverterByPath(path)
-    if (!converter || !markSeeded(path)) return
-
-    for (const sample of converter.sampleTasks) {
-      tasks.value.push({
-        id: nextId++,
-        path,
-        name: sample.name,
-        format: sample.format,
-        bytes: sample.bytes,
-        sizeLabel: sample.size,
-        duration: sample.duration,
-        quality: sample.quality,
-        encoder: sample.encoder,
-        targetFormat: sample.targetFormat,
-        outputName: sample.outputName,
-        outputNameTouched: false,
-      })
-    }
-  }
 
   async function addFiles(path: string, files: File[]) {
     const converter = getConverterByPath(path)
@@ -58,6 +49,7 @@ export const useTasksStore = defineStore('tasks', () => {
     files.forEach((file, index) => {
       const target = converter.defaultTarget
       const extension = fileExtension(file.name)
+      const encoder = getEncodersForTarget(converter, target)[0] ?? ''
       tasks.value.push({
         id: nextId++,
         path,
@@ -66,11 +58,10 @@ export const useTasksStore = defineStore('tasks', () => {
         bytes: file.size,
         sizeLabel: formatSize(file.size),
         duration: durations[index],
-        quality: converter.defaultQuality,
-        encoder: getEncodersForTarget(converter, target)[0] ?? '',
+        quality: clampQualityForEncoder(converter, encoder, converter.defaultQuality),
+        encoder,
         targetFormat: target,
-        outputName: replaceExtension(file.name, target),
-        outputNameTouched: false,
+        outputName: defaultOutputName(file.name, target),
         file,
       })
     })
@@ -94,6 +85,8 @@ export const useTasksStore = defineStore('tasks', () => {
       if (!encoders.includes(task.encoder)) {
         task.encoder = encoders[0] ?? task.encoder
       }
+      // 编码器变了，码率档位要落回该编码器支持的范围（如 libvorbis 最低 32k）
+      task.quality = clampQualityForEncoder(converter, task.encoder, task.quality)
     }
   }
 
@@ -104,18 +97,33 @@ export const useTasksStore = defineStore('tasks', () => {
 
   function updateEncoder(id: number, encoder: string) {
     const task = tasks.value.find((item) => item.id === id)
-    if (task) task.encoder = encoder
+    if (!task) return
+    task.encoder = encoder
+    const converter = getConverterByPath(task.path)
+    if (converter) {
+      task.quality = clampQualityForEncoder(converter, encoder, task.quality)
+    }
   }
 
+  /**
+   * 改名：空输入回落到默认名（源名 + 目标格式），否则净化后写回。
+   * 组件层一律以 store 里的 outputName 为准回显，避免 DOM 与状态不一致。
+   */
   function renameOutput(id: number, name: string) {
     const task = tasks.value.find((item) => item.id === id)
-    const next = name.trim()
-    if (!task || !next) return
-    // 用户只写主文件名时自动补当前目标格式的扩展名
-    task.outputName = fileExtension(next)
-      ? next
-      : `${next}.${task.targetFormat.toLowerCase()}`
-    task.outputNameTouched = true
+    if (!task) return
+    const cleaned = sanitizeFilename(name.trim(), '')
+    // 扩展名一律对齐到目标格式：容器由扩展名决定，
+    // 否则「目标 FLAC、名字 x.mp3」会真的产出 mp3，界面却显示 FLAC。
+    task.outputName = cleaned
+      ? withExtension(cleaned, task.targetFormat)
+      : defaultOutputName(task.name, task.targetFormat)
+  }
+
+  /** 引擎探测出真实时长后回填（浏览器解不出来的容器） */
+  function setDuration(id: number, duration: string) {
+    const task = tasks.value.find((item) => item.id === id)
+    if (task) task.duration = duration
   }
 
   function clearForPath(path: string) {
@@ -127,7 +135,6 @@ export const useTasksStore = defineStore('tasks', () => {
     tasks,
     forPath,
     selectedForPath: selection.selectedForPath,
-    ensureSeeded,
     addFiles,
     toggleSelected: selection.toggle,
     allSelected: selection.allSelected,
@@ -138,6 +145,7 @@ export const useTasksStore = defineStore('tasks', () => {
     updateQuality,
     updateEncoder,
     renameOutput,
+    setDuration,
     clearForPath,
   }
 })

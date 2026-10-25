@@ -1,9 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getConverterByPath } from '../config/converters'
-import { usePathSelection, useSeededPaths } from '../composables/useSelection'
 import type { CompletedTask, OutputItem } from '../types'
+import { usePathSelection } from '../composables/useSelection'
 import { formatSize } from '../utils/format'
+
+/**
+ * 输出列表保留的最近条目数。
+ * 产物 Blob 常驻内存（大文件一条就是几十上百 MB），必须设上限并主动淘汰，
+ * 否则长时间批量转换会把标签页内存吃满。
+ */
+const MAX_OUTPUTS = 20
 
 /**
  * 输出列表。与任务队列一样按转换器路径分组。
@@ -11,27 +17,9 @@ import { formatSize } from '../utils/format'
 export const useOutputsStore = defineStore('outputs', () => {
   const items = ref<OutputItem[]>([])
   const selection = usePathSelection(items)
-  const markSeeded = useSeededPaths()
   let nextId = 1
 
   const forPath = (path: string) => items.value.filter((item) => item.path === path)
-
-  function ensureSeeded(path: string) {
-    const converter = getConverterByPath(path)
-    if (!converter || !markSeeded(path)) return
-    for (const sample of converter.sampleOutputs) {
-      items.value.push({
-        id: nextId++,
-        path,
-        name: sample.name,
-        format: sample.format,
-        duration: sample.duration,
-        sizeLabel: sample.size,
-        quality: sample.quality,
-        encoder: sample.encoder,
-      })
-    }
-  }
 
   function completeTasks(completed: CompletedTask[]) {
     for (const item of completed) {
@@ -48,6 +36,11 @@ export const useOutputsStore = defineStore('outputs', () => {
         blob: item.blob,
       })
     }
+    // 超出上限的最旧条目直接丢弃引用，交给 GC 释放 Blob
+    if (items.value.length > MAX_OUTPUTS) {
+      items.value = items.value.slice(0, MAX_OUTPUTS)
+    }
+    selection.prune()
   }
 
   function removeSelected(path: string) {
@@ -62,7 +55,6 @@ export const useOutputsStore = defineStore('outputs', () => {
     items,
     selectedIds: selection.selectedIds,
     forPath,
-    ensureSeeded,
     completeTasks,
     toggleSelected: selection.toggle,
     allSelected: selection.allSelected,

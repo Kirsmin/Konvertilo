@@ -44,14 +44,3 @@ export function usePathSelection<T extends { id: number; path: string }>(items: 
 
   return { selectedIds, isSelected, selectedForPath, allSelected, toggle, selectAll, clearForPath, prune }
 }
-
-/** 每个转换器路径只播种一次的登记簿（当前示例数据为空） */
-export function useSeededPaths() {
-  const seededPaths = ref<string[]>([])
-
-  return function markSeeded(path: string): boolean {
-    if (seededPaths.value.includes(path)) return false
-    seededPaths.value.push(path)
-    return true
-  }
-}

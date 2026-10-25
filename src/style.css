@@ -88,8 +88,12 @@ a.btn {
 }
 
 /* 下载引擎时隐藏所有操作入口 */
-body[data-status='downloading'] .actionable {
-  display: none;
+/* 下载引擎期间只锁「开始转换」，其余操作（删任务、上传、停止）保持可用，
+   否则用户会被一行进度条卡住 2~4 分钟，连刚选错的文件都删不掉。 */
+body[data-status='downloading'] button.start,
+body[data-status='processing'] button.start {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 /* ---- 分区 ---- */

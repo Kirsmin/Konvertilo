@@ -4,6 +4,10 @@ import type { CompletedTask, HistoryEntry } from '../types'
 import { formatSize } from '../utils/format'
 
 const STORAGE_KEY = 'konvertilo.history.v1'
+/** 历史条目上限：只存元数据，但无上限时 localStorage 迟早超配额 */
+const MAX_HISTORY = 50
+/** 超配额时保守保留的条数，保证还能写进去 */
+const MIN_HISTORY = 10
 
 function normalizeEntry(value: unknown): HistoryEntry | null {
   if (!value || typeof value !== 'object') return null
@@ -46,16 +50,19 @@ function loadEntries(): HistoryEntry[] {
     return parsed
       .map((item) => normalizeEntry(item))
       .filter((item): item is HistoryEntry => item !== null)
+      .slice(0, MAX_HISTORY)
   } catch {
     return []
   }
 }
 
-function persistEntries(entries: HistoryEntry[]) {
+/** 写不进去（配额/隐私模式）时返回 false，由调用方决定降级策略 */
+function persistEntries(entries: HistoryEntry[]): boolean {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
+    return true
   } catch {
-    // localStorage 不可用 / 超出配额时静默忽略
+    return false
   }
 }
 
@@ -65,15 +72,28 @@ function maxId(entries: HistoryEntry[]): number {
 
 /**
  * 转换历史。localStorage 持久化，删除、相对时间切换也会同步保存。
+ * 写满配额时先砍半再试一次，仍然失败就把状态暴露给 UI，而不是静默丢数据。
  */
 export const useHistoryStore = defineStore('history', () => {
   const entries = ref<HistoryEntry[]>(loadEntries())
+  /** 浏览器存储不可写（配额已满 / 隐私模式），历史只能在本次会话内保留 */
+  const storageBlocked = ref(false)
   let nextId = maxId(entries.value) + 1
 
   watch(
     entries,
     (value) => {
-      persistEntries(value)
+      if (persistEntries(value)) {
+        storageBlocked.value = false
+        return
+      }
+      const trimmed = value.slice(0, Math.max(MIN_HISTORY, Math.floor(value.length / 2)))
+      if (trimmed.length < value.length && persistEntries(trimmed)) {
+        storageBlocked.value = false
+        entries.value = trimmed
+        return
+      }
+      storageBlocked.value = true
     },
     { deep: true, immediate: true },
   )
@@ -95,6 +115,9 @@ export const useHistoryStore = defineStore('history', () => {
         path: task.path,
       })
     }
+    if (entries.value.length > MAX_HISTORY) {
+      entries.value = entries.value.slice(0, MAX_HISTORY)
+    }
   }
 
   function toggleShowAbs(id: number) {
@@ -108,6 +131,7 @@ export const useHistoryStore = defineStore('history', () => {
 
   return {
     entries,
+    storageBlocked,
     addCompleted,
     toggleShowAbs,
     remove,

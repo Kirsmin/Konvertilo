@@ -22,14 +22,7 @@ const qualityApplicable = computed(() =>
 const { text: downloadLabel, flash: flashDownloaded } = useFlash('↓ 下载', '✓ 已下载')
 
 function download() {
-  const blob = props.output.blob
-  if (!blob) {
-    // 示例数据等无真实产物的兜底：保持原有闪字行为
-    flashDownloaded()
-    return
-  }
-
-  const url = URL.createObjectURL(blob)
+  const url = URL.createObjectURL(props.output.blob)
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = props.output.name

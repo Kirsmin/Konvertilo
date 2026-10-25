@@ -12,6 +12,10 @@ export const useUiStore = defineStore('ui', () => {
   const progress = ref(0)
   const done = ref(0)
   const total = ref(0)
+  /** 本轮失败的条数，用于「错误 · 失败 n」提示 */
+  const failed = ref(0)
+  /** 本轮开始时间（ms），用于显示已用时间与预计剩余 */
+  const startedAt = ref(0)
   const histOpen = ref(false)
   const errorText = ref('')
   /** 尺寸等非阻断提示，黄色面板展示，不影响继续转换 */
@@ -37,6 +41,8 @@ export const useUiStore = defineStore('ui', () => {
     progress,
     done,
     total,
+    failed,
+    startedAt,
     histOpen,
     errorText,
     warnText,

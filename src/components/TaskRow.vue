@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ConverterConfig, Task } from '../types'
-import { getEncodersForTarget } from '../config/converters'
-import { isQualityApplicable } from '../utils/ffmpegArgs'
+import { getEncodersForTarget, qualitiesForEncoder } from '../config/converters'
+import {
+  isLosslessVideoEncoder,
+  isQualityApplicable,
+  usesQscale,
+} from '../utils/ffmpegArgs'
 import { useTasksStore } from '../stores/tasks'
 import MiniSelect from './MiniSelect.vue'
 import SelectRow from './SelectRow.vue'
@@ -15,6 +19,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   toggle: []
+  retry: []
 }>()
 
 const tasksStore = useTasksStore()
@@ -36,12 +41,11 @@ const ENCODER_TOP_HINT = '↑ 推荐 / 兼容性优先'
 
 const ENCODER_HINTS: Record<string, string> = {
   libmp3lame: '[推荐] 兼容性好',
-  aac: '[推荐] 兼容性好',
+  aac: '[推荐] 兼容性好 · 码率为目标值',
   alac: '无损 · 苹果生态',
   ac3: '兼容性好',
   ac3_fixed: '兼容性好',
   libvorbis: '性能强',
-  libopus: '[推荐] 性能强',
   flac: '无损 · 兼容性好',
   pcm_s16le: '无损 · 兼容性好',
   pcm_s24le: '无损 · 高解析',
@@ -54,12 +58,9 @@ const ENCODER_HINTS: Record<string, string> = {
   wmav1: '兼容性好',
   wmav2: '[推荐] 兼容性好',
   libx264: '[推荐] 兼容性好',
-  libx265: '性能强 · 压缩率高',
   mpeg4: '兼容性好',
   mpeg2video: '兼容性好',
-  mpeg1video: '兼容性好',
-  mjpeg: '兼容性好',
-  'libvpx-vp9': '性能强 · 压缩率高',
+  mpeg1video: '兼容性好 · 输出 25fps',
   libvpx: '兼容性好',
   ffv1: '无损 · 体积大',
   prores_ks: '专业剪辑',
@@ -82,7 +83,8 @@ const isCrfQuality = computed(() =>
 
 // 音频码率越大越好，因此倒序展示；CRF 数值越小越好，保持 0 在最上方
 const qualityOptions = computed(() => {
-  const options = [...props.converter.qualities]
+  // 码率档位按编码器下限过滤：libvorbis 最低 32k，wmav1/wmav2 最低 24k
+  const options = [...qualitiesForEncoder(props.converter, props.task.encoder)]
   return isCrfQuality.value ? options : options.reverse()
 })
 
@@ -125,21 +127,38 @@ const qualityHints = computed(() =>
   ),
 )
 
+// 体积预警：无损编码器与 GIF 的产物常比源文件大一个量级，转完才发现就晚了
+const sizeWarning = computed(() => {
+  if (props.converter.to !== 'Video') return ''
+  if (props.task.targetFormat === 'GIF') {
+    return 'GIF 固定 12fps / 480 宽重采样，体积通常是源文件的数倍'
+  }
+  if (isLosslessVideoEncoder(props.task.encoder)) {
+    return `${props.task.encoder} 是无损编码，产物可能有源文件的数倍到数十倍大`
+  }
+  return ''
+})
+
+const qualityTitle = computed(() =>
+  usesQscale(props.task.encoder)
+    ? '目标质量（该编码器按 Q 值 1-31 生效，已按档位换算）'
+    : '目标质量',
+)
+
 function onNameBlur(event: FocusEvent) {
   const element = event.currentTarget as HTMLElement
   const value = (element.textContent ?? '').trim()
-  if (!value) {
-    element.textContent = props.task.outputName
-    return
-  }
+  // 一律写回 store：空输入回落默认名，非法字符在 store 内净化，
+  // 再用 store 里的结果回显，避免「界面显示 A、状态里是 B」。
   tasksStore.renameOutput(props.task.id, value)
-  element.textContent = value
+  element.textContent = props.task.outputName
 }
 </script>
 
 <template>
   <SelectRow :selected="selected" @toggle="emit('toggle')">
     <div class="line1">
+      <span v-if="task.error" class="errbadge" :title="task.error">✗</span>
       <span class="fname">{{ task.name }}</span>
       <span class="mmeta">
         <span class="fmt">{{ task.format }}</span>
@@ -169,7 +188,7 @@ function onNameBlur(event: FocusEvent) {
         <MiniSelect
           :model-value="task.quality"
           :options="qualityOptions"
-          title="目标质量"
+          :title="qualityTitle"
           :top-hint="QUALITY_TOP_HINT"
           :option-hints="qualityHints"
           @change="tasksStore.updateQuality(task.id, $event)"
@@ -190,6 +209,15 @@ function onNameBlur(event: FocusEvent) {
       <span v-else class="encoder-fixed">
         编码器 {{ task.encoder }}
       </span>
+      <button
+        v-if="task.error"
+        type="button"
+        class="btn actionable retry"
+        title="重新转换这一条"
+        @click="emit('retry')"
+      >
+        重试
+      </button>
       <span>
         输出
         <span
@@ -203,6 +231,9 @@ function onNameBlur(event: FocusEvent) {
         ></span>
       </span>
     </div>
+
+    <p v-if="task.error" class="rowerr">{{ task.error }}</p>
+    <p v-if="sizeWarning && !task.error" class="rowwarn">{{ sizeWarning }}</p>
   </SelectRow>
 </template>
 
@@ -256,6 +287,30 @@ function onNameBlur(event: FocusEvent) {
 
 .quality-fixed {
   white-space: nowrap;
+}
+
+.errbadge {
+  color: var(--err);
+  font-weight: 600;
+}
+
+.retry {
+  color: var(--err);
+}
+
+.rowerr,
+.rowwarn {
+  font-size: 11px;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.rowerr {
+  color: var(--err);
+}
+
+.rowwarn {
+  color: var(--warn);
 }
 
 .oname {

@@ -32,6 +32,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="popover" role="dialog" aria-label="历史记录" @click.stop>
+    <p v-if="historyStore.storageBlocked" class="hnote">
+      浏览器存储空间不足，历史只保留本次会话中的记录
+    </p>
     <ul v-if="entries.length">
       <li v-for="(entry, index) in entries" :key="entry.id" class="hentry">
         <div class="hhead">
@@ -149,6 +152,14 @@ onBeforeUnmount(() => {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.hnote {
+  margin: 0 0 6px;
+  padding: 4px 6px;
+  color: var(--err);
+  font-size: 12px;
+  border-left: 1px solid var(--err);
 }
 
 .hempty {

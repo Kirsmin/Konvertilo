@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { CONVERTERS } from '../config/converters'
 import type { ConverterConfig } from '../types'
 import { useFlash } from '../composables/useFlash'
+import { useFFmpeg } from '../composables/useFFmpeg'
 import { useUiStore } from '../stores/ui'
 import { copyText } from '../utils/format'
 import HistoryPopover from './HistoryPopover.vue'
@@ -15,7 +16,81 @@ const props = defineProps<{
 
 const router = useRouter()
 const ui = useUiStore()
-const { status, progress, done, total, histOpen } = storeToRefs(ui)
+const { status, progress, done, total, failed, histOpen } = storeToRefs(ui)
+const { state: engineState, download } = useFFmpeg()
+
+/** 引擎是否已就绪：首屏还没加载核心时不要谎报「准备就绪」 */
+const engineReady = computed(() => engineState.value === 'ready')
+
+/** 错误日志默认折叠：首行说人话，原始日志需要时再展开 */
+const showErrorLog = ref(false)
+const errorHead = computed(() => ui.errorText.split('\n')[0].trim())
+const errorTail = computed(() =>
+  ui.errorText.split('\n').slice(1).join('\n').trim(),
+)
+
+watch(
+  () => ui.errorText,
+  () => {
+    showErrorLog.value = false
+  },
+)
+
+/** 处理中的计时：已用时间 + 按进度外推的剩余时间，避免用户盯着百分比干等 */
+const now = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | null = null
+
+watch(
+  status,
+  (value) => {
+    if (value === 'processing') {
+      now.value = Date.now()
+      if (!ticker) {
+        ticker = setInterval(() => {
+          now.value = Date.now()
+        }, 1_000)
+      }
+      return
+    }
+    if (ticker) {
+      clearInterval(ticker)
+      ticker = null
+    }
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  if (ticker) clearInterval(ticker)
+})
+
+const elapsed = computed(() =>
+  ui.startedAt ? Math.max(0, Math.round((now.value - ui.startedAt) / 1000)) : 0,
+)
+const eta = computed(() => {
+  if (status.value !== 'processing' || progress.value < 5) return 0
+  return Math.round((elapsed.value * (100 - progress.value)) / progress.value)
+})
+
+function clock(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+/** 下载期的体积 / 速度，比百分比更能说明「要不要等」 */
+const downloadSize = computed(() => {
+  const { received, total, indeterminate } = download.value
+  if (!received) return ''
+  const done = (received / 1048576).toFixed(1)
+  if (indeterminate) return `${done}MB`
+  if (!total) return ''
+  return `${done}/${(total / 1048576).toFixed(1)}MB`
+})
+const downloadSpeed = computed(() =>
+  download.value.bps > 0
+    ? `${(download.value.bps / 1048576).toFixed(2)}MB/s`
+    : '',
+)
 
 const fromWrap = ref<HTMLElement | null>(null)
 const toWrap = ref<HTMLElement | null>(null)
@@ -195,17 +270,31 @@ onBeforeUnmount(() => {
 
     <div class="status" aria-live="polite">
       <template v-if="status === 'idle'">
-        <span class="ok">✓</span> 准备就绪
+        <template v-if="engineReady">
+          <span class="ok">✓</span> 准备就绪
+        </template>
+        <template v-else>
+          <span class="idle-hint">选择文件后加载引擎（首次约 32MB）</span>
+        </template>
       </template>
       <template v-else-if="status === 'downloading'">
-        ↓ 下载引擎中({{ progress }}%)
-        <span class="bar"><i :style="{ width: `${progress}%` }"></i></span>
+        ↓ 下载引擎中<template v-if="!download.indeterminate">({{ progress }}%)</template>
+        <span v-if="downloadSize" class="dl-detail">
+          {{ downloadSize }}<template v-if="downloadSpeed"> · {{ downloadSpeed }}</template>
+        </span>
+        <span class="bar" :class="{ moving: download.indeterminate }">
+          <i :style="download.indeterminate ? undefined : { width: `${progress}%` }"></i>
+        </span>
       </template>
       <template v-else-if="status === 'error'">
         <span class="er">✗</span> 错误
+        <span v-if="failed" class="err-count">（失败 {{ failed }}/{{ total }}）</span>
       </template>
       <template v-else-if="status === 'processing'">
         <span class="spin">✳︎</span> 处理中({{ done }}/{{ total }} · {{ progress }}%)
+        <span class="timing">
+          {{ clock(elapsed) }}<template v-if="eta"> / 预计还需 {{ clock(eta) }}</template>
+        </span>
         <span class="bar"><i :style="{ width: `${progress}%` }"></i></span>
       </template>
     </div>
@@ -215,10 +304,19 @@ onBeforeUnmount(() => {
       <HistoryPopover v-if="histOpen" />
     </div>
 
-    <div v-if="status === 'error' && ui.errorText" class="errbox">
+    <div v-if="status === 'error' && ui.errorText" class="errbox" role="alert">
       <div class="errhead">
         <span>错误详情</span>
         <span class="erractions">
+          <button
+            v-if="errorTail"
+            type="button"
+            class="btn"
+            :aria-expanded="showErrorLog"
+            @click="showErrorLog = !showErrorLog"
+          >
+            {{ showErrorLog ? '收起日志' : '查看日志' }}
+          </button>
           <button type="button" class="btn" @click="copyError">
             {{ copyLabel }}
           </button>
@@ -233,7 +331,8 @@ onBeforeUnmount(() => {
           </button>
         </span>
       </div>
-      <pre class="errbody">{{ ui.errorText }}</pre>
+      <p class="errmsg">{{ errorHead }}</p>
+      <pre v-if="showErrorLog && errorTail" class="errbody">{{ errorTail }}</pre>
     </div>
 
     <div v-if="status !== 'error' && ui.warnText" class="warnbox">
@@ -381,6 +480,24 @@ onBeforeUnmount(() => {
   color: var(--err);
 }
 
+.errmsg {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.err-count,
+.dl-detail,
+.timing,
+.idle-hint {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 2px;
+}
+
 .warnbox {
   color: var(--warn);
   margin-top: 8px;
@@ -434,6 +551,21 @@ onBeforeUnmount(() => {
   display: block;
   height: 100%;
   background: var(--accent);
+}
+
+/* 总大小未知（CDN 压缩响应）时用不定态进度条，而不是假装 98% 卡住 */
+.bar.moving i {
+  width: 38%;
+  animation: bar-move 1.1s ease-in-out infinite;
+}
+
+@keyframes bar-move {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
 }
 
 .spin {

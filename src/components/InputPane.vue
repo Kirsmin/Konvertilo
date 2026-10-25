@@ -15,6 +15,7 @@ const emit = defineEmits<{
   files: [files: File[]]
   start: []
   stop: []
+  retry: [id: number]
 }>()
 
 const tasksStore = useTasksStore()
@@ -141,6 +142,7 @@ onBeforeUnmount(() => {
         :converter="converter"
         :selected="selectedIds.includes(task.id)"
         @toggle="tasksStore.toggleSelected(task.id)"
+        @retry="emit('retry', task.id)"
       />
     </ul>
 

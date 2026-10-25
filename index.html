@@ -4,10 +4,19 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- ffmpeg 核心（约 32MB）从 npmmirror 拉取，提前握手省一个 RTT -->
+    <link rel="preconnect" href="https://registry.npmmirror.com" crossorigin />
     <meta
       name="description"
       content="Konvertilo —— 在浏览器本地完成音视频格式转换。"
     />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Konvertilo —— 浏览器本地音视频转换" />
+    <meta
+      property="og:description"
+      content="纯浏览器端 ffmpeg.wasm 音视频转换：文件不上传，支持 MP4/MKV/WEBM/MOV/AVI/GIF 与 MP3/AAC/FLAC/WAV 等格式。"
+    />
+    <meta name="twitter:card" content="summary" />
     <title>∮ 转换器</title>
   </head>
   <body data-theme="auto" data-status="idle">
