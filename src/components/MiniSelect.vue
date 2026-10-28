@@ -71,4 +71,17 @@ select.mini {
     font-size: 11px;
   }
 }
+
+@media (max-width: 720px) {
+  /* 触控目标 ≥44px：内边距撑高、负边距抵消占位，视觉布局不变 */
+  select.mini {
+    padding: 12px 22px 12px 1px;
+    margin: -12px -8px;
+  }
+
+  .selwrap::after {
+    right: 9px;
+    top: 12px;
+  }
+}
 </style>

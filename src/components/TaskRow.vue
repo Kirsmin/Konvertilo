@@ -83,7 +83,8 @@ const isCrfQuality = computed(() =>
 
 // 音频码率越大越好，因此倒序展示；CRF 数值越小越好，保持 0 在最上方
 const qualityOptions = computed(() => {
-  // 码率档位按编码器下限过滤：libvorbis 最低 32k，wmav1/wmav2 最低 24k
+  // 质量档位按编码器约束过滤：音频看最低码率（libvorbis 双声道 48k、wma 24k），
+  // 视频看 CRF 下限（libvpx 最低 4）
   const options = [...qualitiesForEncoder(props.converter, props.task.encoder)]
   return isCrfQuality.value ? options : options.reverse()
 })
@@ -131,7 +132,7 @@ const qualityHints = computed(() =>
 const sizeWarning = computed(() => {
   if (props.converter.to !== 'Video') return ''
   if (props.task.targetFormat === 'GIF') {
-    return 'GIF 固定 12fps / 480 宽重采样，体积通常是源文件的数倍'
+    return 'GIF 固定 12fps、最宽 480 像素（小素材不放大），体积通常是源文件的数倍'
   }
   if (isLosslessVideoEncoder(props.task.encoder)) {
     return `${props.task.encoder} 是无损编码，产物可能有源文件的数倍到数十倍大`
@@ -223,10 +224,14 @@ function onNameBlur(event: FocusEvent) {
         <span
           class="oname"
           contenteditable="true"
+          tabindex="0"
+          role="textbox"
+          aria-label="输出文件名，可直接编辑"
           spellcheck="false"
           title="点击基于原名修改"
           @blur="onNameBlur"
           @keydown.enter.prevent="($event.target as HTMLElement).blur()"
+          @keydown.esc.prevent="($event.target as HTMLElement).blur()"
           v-text="task.outputName"
         ></span>
       </span>

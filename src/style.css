@@ -185,7 +185,7 @@ body[data-status='processing'] button.start {
 }
 
 @media (max-width: 720px) {
-  /* 触控目标放大：视觉不变，命中区外扩 */
+  /* 触控目标放大到 ≥44px：视觉不变，命中区外扩（WCAG 2.5.5 / Apple HIG） */
   .btn {
     position: relative;
   }
@@ -193,10 +193,21 @@ body[data-status='processing'] button.start {
   .btn::after {
     content: '';
     position: absolute;
-    left: -6px;
-    right: -6px;
-    top: -7px;
-    bottom: -5px;
+    left: -8px;
+    right: -8px;
+    top: -12px;
+    bottom: -11px;
+  }
+
+  /* 行首的选择圆点：18px 视觉，命中区外扩到 44px */
+  .circle {
+    position: relative;
+  }
+
+  .circle::before {
+    content: '';
+    position: absolute;
+    inset: -13px;
   }
 
   .pane-head {

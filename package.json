@@ -17,6 +17,7 @@
     "vue-router": "^5.4.0"
   },
   "devDependencies": {
+    "@ffmpeg/core-mt": "0.12.10",
     "@types/node": "^24.19.2",
     "@vitejs/plugin-vue": "^6.0.10",
     "@vue/tsconfig": "^0.9.1",

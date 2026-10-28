@@ -2,6 +2,19 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // 强制 HTTPS：HTTP 入口直接升级（本地开发除外）。
+      // 隔离上下文（SharedArrayBuffer）只在安全上下文生效，HTTP 下降级
+      // 会悄悄失去多线程能力，必须在这里拦掉而不是到转换时才暴露。
+      if (
+        location.protocol === 'http:' &&
+        !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)
+      ) {
+        location.replace(
+          'https://' + location.host + location.pathname + location.search + location.hash,
+        )
+      }
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- ffmpeg 核心（约 32MB）从 npmmirror 拉取，提前握手省一个 RTT -->

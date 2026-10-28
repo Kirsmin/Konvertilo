@@ -18,6 +18,9 @@
   Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: data: https://registry.npmmirror.com https://cdn.jsdelivr.net https://unpkg.com https://cloudflareinsights.com; worker-src 'self' blob:; manifest-src 'self'
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
+  # 全站仅通过 HTTPS 提供：HSTS 让浏览器拒绝任何 HTTP 降级入口，
+  # 同时保住 cross-origin isolation（隔离状态只在安全上下文生效）
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=()

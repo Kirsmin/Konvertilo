@@ -189,12 +189,14 @@ export function buildFFmpegArgs(
   }
 
   if (task.targetFormat === 'GIF') {
+    // 只缩小不放大：320×180 这类小素材原来会被无端上采样到 480×270，
+    // 体积变大、画质并无收益。min(480,iw) 保证宽不超过 480 且绝不放大。
     return withThreads([
       '-an',
       '-c:v',
       'gif',
       '-vf',
-      'fps=12,scale=480:-1:flags=lanczos',
+      "fps=12,scale='min(480,iw)':-1:flags=lanczos",
       '-loop',
       '0',
     ])

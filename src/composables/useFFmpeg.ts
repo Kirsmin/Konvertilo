@@ -59,6 +59,14 @@ const MAX_THREADS = 4
 const MIN_CORES_FOR_MULTI = 4
 const MIN_MEMORY_FOR_MULTI = 4
 
+/**
+ * 引擎实例的回收阈值：连续转码这么多条后主动销毁重建实例。
+ * wasm32 的线性内存在大量异质素材（不同编码器/分辨率）转换后会严重碎片化，
+ * 继续复用实例轻则内存暴涨、重则渲染进程 OOM 直接白屏（实测 34+ 条后必现），
+ * 而核心 blob URL 常驻，重建实例只需重新实例化（秒级），比崩一次便宜得多。
+ */
+export const ENGINE_RECYCLE_AFTER = 8
+
 interface EnginePlan {
   mode: EngineMode
   threads: number
@@ -137,6 +145,10 @@ let wasmObjectUrl = ''
 let workerObjectUrl = ''
 /** 转换/探测进行中：避免同时占用同一份 MEMFS */
 let busy = false
+/** 当前实例已完成的 exec 次数：超过阈值后由转换层触发回收重建 */
+let execsSinceBoot = 0
+/** 引擎下载的中止控制器：用户点「取消」时中断所有镜像的 fetch */
+let loadAbortController: AbortController | null = null
 
 /** 引擎被 wasm trap 打崩、已经重置：调用方可以决定是否重试一次 */
 export class EngineCrashedError extends Error {
@@ -184,12 +196,52 @@ interface DownloadProgress {
  * 读取同一个 response，抛出 "Response.arrayBuffer: Body has already been consumed."。
  * 这里只消费一次响应体，进度按已收字节估算，不做长度相等校验。
  */
+/** 核心文件的 npm 包归属，用于查完整性哈希表 */
+type CorePackage = 'core' | 'core-mt'
+
+/**
+ * 校验下载到的核心文件与构建期注入的 SHA-256 是否一致。
+ * 三个 CDN 任一个被劫持/篡改都会在哈希这一层被拦下，换源重试；
+ * 全部不符则整体报错，绝不让被篡改的 js/wasm 以 blob 形式执行。
+ */
+async function verifyCoreIntegrity(
+  pack: CorePackage,
+  file: CoreFile,
+  bytes: Uint8Array,
+): Promise<void> {
+  const expected = __FFMPEG_CORE_INTEGRITY__?.[pack]?.[file]
+  // 本地拿不到哈希表或环境不支持 WebCrypto 时跳过校验（不影响功能）
+  if (!expected || !globalThis.crypto?.subtle) return
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer,
+  )
+  const actual = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  if (actual !== expected) {
+    throw new Error(`核心文件 ${file} 完整性校验失败（哈希不符），已丢弃该副本`)
+  }
+}
+
 async function downloadOnce(
   url: string,
   mimeType: string,
   onProgress?: (event: DownloadProgress) => void,
+  pack?: CorePackage,
+  file?: CoreFile,
+  signal?: AbortSignal,
 ): Promise<string> {
   const controller = new AbortController()
+  // 外部中止（用户点取消）与内部看门狗（超时）任一触发都中断下载
+  const onExternalAbort = () => controller.abort()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', onExternalAbort, { once: true })
+  }
   let watchdog: ReturnType<typeof setTimeout> | undefined
   const armWatchdog = (ms: number) => {
     if (watchdog) clearTimeout(watchdog)
@@ -244,6 +296,8 @@ async function downloadOnce(
     if (total > 0 && bytes.byteLength < total) {
       throw new Error(`下载核心不完整：${bytes.byteLength}/${total}`)
     }
+    // 以 blob 执行前先核对 SHA-256：被篡改的核心在这一步被拦下
+    if (pack && file) await verifyCoreIntegrity(pack, file, bytes)
     onProgress?.({
       received: bytes.byteLength,
       total: bytes.byteLength,
@@ -258,27 +312,35 @@ async function downloadOnce(
     return URL.createObjectURL(new Blob([buffer], { type: mimeType }))
   } finally {
     if (watchdog) clearTimeout(watchdog)
+    // 外部 listener 挂在调用方的 signal 上，不摘除会随下载次数累积泄漏
+    signal?.removeEventListener('abort', onExternalAbort)
   }
 }
 
 type CoreFile = 'ffmpeg-core.js' | 'ffmpeg-core.wasm' | 'ffmpeg-core.worker.js'
 
 /** 当前档位对应的 npm 包名 */
-function corePackage(): string {
+function corePackage(): CorePackage {
   return plan.value.mode === 'multi' ? 'core-mt' : 'core'
 }
 
-/** 依次尝试各镜像，返回第一个成功的 blob URL */
+/** 依次尝试各镜像，返回第一个成功且通过完整性校验的 blob URL */
 async function downloadWithFallback(
   file: CoreFile,
   mimeType: string,
   onProgress?: (event: DownloadProgress) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
+  const pack = corePackage()
   let lastError: unknown = null
   for (const mirror of MIRRORS) {
-    const url = mirror.base(corePackage()) + file
+    // 用户在镜像切换间隙点取消：不再发起新请求
+    if (signal?.aborted) {
+      throw new DOMException('下载已取消', 'AbortError')
+    }
+    const url = mirror.base(pack) + file
     try {
-      const blobUrl = await downloadOnce(url, mimeType, onProgress)
+      const blobUrl = await downloadOnce(url, mimeType, onProgress, pack, file, signal)
       download.value.source = mirror.name
       return blobUrl
     } catch (reason) {
@@ -293,13 +355,13 @@ async function downloadWithFallback(
  * 核心只下载一次：blob URL 常驻页面生命周期。
  * 引擎崩溃后重建实例时可以直接复用，不必再拉 32MB。
  */
-async function ensureCoreUrls() {
+async function ensureCoreUrls(signal?: AbortSignal) {
   if (coreObjectUrl && wasmObjectUrl) return
 
   download.value = { received: 0, total: 0, bps: 0, source: '', indeterminate: false }
   coreObjectUrl = await downloadWithFallback('ffmpeg-core.js', 'text/javascript', (event) => {
     setProgress(rangeProgress(0, 3, event.received, event.total))
-  })
+  }, signal)
   setProgress(3)
 
   wasmObjectUrl = await downloadWithFallback('ffmpeg-core.wasm', 'application/wasm', (event) => {
@@ -324,6 +386,7 @@ async function ensureCoreUrls() {
       (event) => {
         setProgress(rangeProgress(92, 98, event.received, event.total))
       },
+      signal,
     )
   }
   setProgress(99)
@@ -342,12 +405,16 @@ async function loadEngine(): Promise<void> {
   }
   setProgress(0)
 
+  // 本轮下载的中止信号：用户点「取消下载」时中断所有镜像请求
+  const controller = new AbortController()
+  loadAbortController = controller
+
   // 仅在真正需要时加载 ffmpeg 封装，首屏不包含任何 wasm 代码。
   const { FFmpeg: FFmpegCtor } = await import('@ffmpeg/ffmpeg')
 
   /** 按当前档位下载核心并实例化；多线程档位会额外下载 pthread worker */
   const boot = async (): Promise<FFmpeg> => {
-    await ensureCoreUrls()
+    await ensureCoreUrls(controller.signal)
     const ffmpeg = new FFmpegCtor()
     // 初始化卡住（线程池异常、内存不足）时不要无限等待，超时就报错并允许降级/重试
     await withTimeout(
@@ -367,7 +434,15 @@ async function loadEngine(): Promise<void> {
   try {
     try {
       instance = await boot()
+      // 新实例从零开始计数：回收阈值只对「同一实例连续转码」生效
+      execsSinceBoot = 0
     } catch (reason) {
+      // 用户主动取消：不记为错误，回到空闲态等待下次触发
+      if (controller.signal.aborted) {
+        state.value = 'idle'
+        if (!silent && ui.status === 'downloading') ui.status = 'idle'
+        return
+      }
       // 多线程档位失败（镜像缺 worker、内存不足、浏览器不支持等）：
       // 丢掉 core-mt 的 blob，换回单线程核心重来一次，绝不让用户卡死在这里。
       if (plan.value.mode !== 'multi') throw reason
@@ -397,6 +472,8 @@ async function loadEngine(): Promise<void> {
       ui.errorText = error.value
       ui.status = 'error'
     }
+  } finally {
+    loadAbortController = null
   }
 }
 
@@ -428,6 +505,23 @@ function resetEngine() {
   state.value = 'idle'
   error.value = ''
   setProgress(0)
+}
+
+/**
+ * 用户取消引擎下载：中断当前所有镜像请求。
+ * loadEngine 会把状态退回空闲，不记为错误；下次 ensureLoaded 可重新下载。
+ */
+function cancelEngineLoad() {
+  loadAbortController?.abort()
+}
+
+/**
+ * 当前实例是否该回收重建了（连续转码过多，wasm 内存碎片化）。
+ * 由转换层在任务间隙调用：true 时先 resetEngine() 再 ensureLoaded()，
+ * 核心 blob URL 常驻，重建只重新实例化，通常几秒内完成。
+ */
+export function shouldRecycleEngine(): boolean {
+  return execsSinceBoot >= ENGINE_RECYCLE_AFTER
 }
 
 function isFatalWasmError(reason: unknown): boolean {
@@ -677,6 +771,7 @@ export async function transcode(options: TranscodeOptions): Promise<Blob> {
     throw reason
   } finally {
     busy = false
+    execsSinceBoot += 1
     ffmpeg.off('progress', onProgress)
     ffmpeg.off('log', onLog)
     if (instance === ffmpeg) {
@@ -750,6 +845,8 @@ export function useFFmpeg() {
     threads,
     ensureLoaded,
     resetEngine,
+    cancelEngineLoad,
+    shouldRecycleEngine,
     getFFmpeg,
     transcode,
     probeMetadata,

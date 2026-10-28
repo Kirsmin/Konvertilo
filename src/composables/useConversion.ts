@@ -4,15 +4,40 @@ import { useTasksStore } from '../stores/tasks'
 import { useOutputsStore } from '../stores/outputs'
 import { useHistoryStore } from '../stores/history'
 import { useUiStore } from '../stores/ui'
-import { EngineCrashedError, useFFmpeg } from './useFFmpeg'
+import { EngineCrashedError, shouldRecycleEngine, useFFmpeg } from './useFFmpeg'
 import { buildFFmpegArgs, mimeTypeForFormat } from '../utils/ffmpegArgs'
 import { clampProgress } from '../utils/format'
 
 /** wasm trap 后自动重试的次数：ffv1 / 无损编码器偶发内存越界，重试一次通常就过 */
 const CRASH_RETRY_LIMIT = 1
 
+/**
+ * 动态 import / 内部资源加载失败时的典型报错模式。
+ * 这些报错会把 https://…/assets/xxx.js 这类内部路径暴露给用户，
+ * 统一翻译成一句人话；离线场景给出明确指引而不是一串 URL。
+ */
+const MODULE_LOAD_FAILURE =
+  /failed to fetch dynamically imported module|error loading (?:dynamically )?imported module|importing a module script failed|failed to load module|dynamically imported module/i
+
+/** 剥离报错里的内部路径与 URL（/assets/…、/Konvertilo/…、http(s)://…），只留可读信息 */
+function sanitizeMessage(message: string): string {
+  return message
+    .replace(/https?:\/\/[^\s)'"]+/gi, '')
+    .replace(/(?:[\w.-]+\/)+[\w.-]*assets\/[\w.-]+/gi, '内部资源')
+    .replace(/[(\[][^\n)]*(?:assets|Konvertilo)[^\n)]*[)\]]/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/（\s*）|\(\s*\)|：\s*$|: $/g, '')
+    .trim()
+}
+
 function describeError(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason)
+  const raw = reason instanceof Error ? reason.message : String(reason)
+  if (MODULE_LOAD_FAILURE.test(raw)) {
+    return navigator.onLine
+      ? '首次转换需要的组件加载失败。请刷新页面重试；如果反复出现，请清除缓存后再试。'
+      : '当前处于离线状态，首次转换需要的组件未能提前缓存。请联网后刷新页面，再开始转换。'
+  }
+  return sanitizeMessage(raw)
 }
 
 function firstLine(message: string): string {
@@ -37,10 +62,19 @@ type TaskOutcome =
   | { status: 'engine-down'; message: string }
   | { status: 'abort' }
 
+interface BatchContext {
+  token: number
+  /** 本批可执行任务总数：进度按 (已完成 + 当前文件进度) / 总数 累加，绝不每文件归零 */
+  size: number
+  /** 本批已完成的任务数 */
+  completed: number
+}
+
 /**
  * 串行真实转换：逐任务调用 ffmpeg.wasm transcode。
  * 单任务失败记录错误并继续；成功的任务立即出队并写入输出与历史；
- * 路由切换 / 组件卸载时中止当前转码。
+ * 路由切换 / 组件卸载时中止当前转码；
+ * 同一实例连续转码过多时在任务间隙回收重建，避免 wasm 内存碎片化拖垮页面。
  */
 export function useConversion(converter: Ref<ConverterConfig>) {
   const tasksStore = useTasksStore()
@@ -83,10 +117,23 @@ export function useConversion(converter: Ref<ConverterConfig>) {
     }
   }
 
-  async function runOne(task: Task, token: number): Promise<TaskOutcome> {
+  /** 实例该回收时销毁重建（核心 blob 常驻，重建只重新实例化）。路由切换场景用。 */
+  async function recycleEngineIfNeeded(): Promise<void> {
+    if (!shouldRecycleEngine()) return
+    resetEngine()
+    await ensureLoaded()
+  }
+
+  async function runOne(
+    task: Task,
+    batch: BatchContext,
+  ): Promise<TaskOutcome> {
+    const token = batch.token
     for (let attempt = 0; ; attempt += 1) {
-      ui.progress = 0
       task.error = undefined
+      // 进度基线 = 已完成条数占比，当前文件的 ratio 只占 1/N 的权重
+      const base = (batch.completed / batch.size) * 100
+      ui.progress = clampProgress(base)
       try {
         const blob = await transcode({
           file: task.file as File,
@@ -97,16 +144,22 @@ export function useConversion(converter: Ref<ConverterConfig>) {
           mimeType: mimeTypeForFormat(task.targetFormat),
           signal: abortController?.signal,
           onProgress: (ratio) => {
-            ui.progress = clampProgress(ratio * 100)
+            ui.progress = clampProgress(base + (ratio * 100) / batch.size)
           },
         })
 
         if (token !== runToken) return { status: 'abort' }
         const completed: CompletedTask = { task, blob }
-        outputsStore.completeTasks([completed])
+        const evicted = outputsStore.completeTasks([completed])
         historyStore.addCompleted([completed])
         tasksStore.remove(task.id)
         ui.done += 1
+        batch.completed += 1
+        ui.progress = clampProgress((batch.completed / batch.size) * 100)
+        // 产物被上限淘汰时明确提示，而不是悄悄消失
+        if (evicted > 0) {
+          ui.warnText = outputsStore.evictionNotice(evicted)
+        }
         return { status: 'done' }
       } catch (reason) {
         if (isAbort(reason) || token !== runToken) return { status: 'abort' }
@@ -130,13 +183,28 @@ export function useConversion(converter: Ref<ConverterConfig>) {
 
   async function runTasks(tasks: Task[], token: number) {
     const failed: string[] = []
+    // 没有文件的条目不参与转换，也不应拉低整体进度分母
+    const runnable = tasks.filter((task) => task.file)
+    const batch: BatchContext = { token, size: Math.max(1, runnable.length), completed: 0 }
 
-    for (const task of tasks) {
-      if (!task.file) continue
-
-      const outcome = await runOne(task, token)
+    for (const task of runnable) {
+      const outcome = await runOne(task, batch)
       if (outcome.status === 'abort') return
-      if (outcome.status === 'done') continue
+      if (outcome.status === 'done') {
+        // 任务间隙检查实例寿命：同一实例连续转码过多就销毁重建，
+        // 释放 wasm 线性内存，防止碎片化累积最终拖垮渲染进程
+        if (shouldRecycleEngine()) {
+          resetEngine()
+          await ensureLoaded()
+          if (token !== runToken) return
+          if (engineState.value !== 'ready') {
+            failed.push('引擎已重置，剩余任务未执行，请重新点击开始转换。')
+            ui.failed = failed.length
+            break
+          }
+        }
+        continue
+      }
 
       failed.push(`${task.name}: ${outcome.message}`)
       ui.failed = failed.length
@@ -163,6 +231,7 @@ export function useConversion(converter: Ref<ConverterConfig>) {
     const queued = tasksStore.forPath(converter.value.path)
     const tasks = ids ? queued.filter((task) => ids.includes(task.id)) : queued
     if (tasks.length === 0) return
+    // 串行执行：同一时刻只允许一个批次（引擎单例，MEMFS 也不支持并发）
     if (ui.status === 'processing' || ui.status === 'downloading') return
 
     const token = ++runToken
@@ -175,28 +244,48 @@ export function useConversion(converter: Ref<ConverterConfig>) {
     ui.progress = 0
     ui.startedAt = Date.now()
 
-    // 引擎未就绪时先静默加载（保持处理中状态行）
-    await ensureLoaded()
-    if (token !== runToken) return
+    try {
+      // 引擎未就绪时先静默加载（保持处理中状态行）
+      await ensureLoaded()
+      if (token !== runToken) return
 
-    // 引擎加载失败：任务保留，进入错误态以沿用「复制错误信息」
-    if (engineState.value !== 'ready') {
-      ui.errorText = engineError.value || 'ffmpeg.wasm 引擎加载失败'
+      // 引擎加载失败：任务保留，进入错误态以沿用「复制错误信息」
+      if (engineState.value !== 'ready') {
+        ui.errorText = engineError.value || 'ffmpeg.wasm 引擎加载失败'
+        ui.warnText = ''
+        ui.status = 'error'
+        ui.startedAt = 0
+        return
+      }
+
+      abortController = new AbortController()
+      try {
+        await runTasks(tasks, token)
+      } finally {
+        abortController = null
+      }
+    } catch (reason) {
+      // 任何未预期的异常都收敛为错误面板提示，绝不让整页崩溃白屏
+      if (token !== runToken) return
+      abortController = null
+      ui.errorText = describeError(reason) || '转换过程出现未知错误'
       ui.warnText = ''
       ui.status = 'error'
       ui.startedAt = 0
-      return
     }
-
-    abortController = new AbortController()
-    await runTasks(tasks, token)
-    abortController = null
   }
 
-  // 路由切换（转换器变化）时中止当前转码
+  /**
+   * 路由切换（转换器变化）时中止当前转码；
+   * 同时检查实例寿命：上一转换器如果高强度用过引擎，先销毁释放内存，
+   * 避免带着碎片化的 wasm 实例进入下一个转换器（实测会在此刻整页崩溃）。
+   */
   watch(
     () => converter.value.path,
-    () => stop(),
+    () => {
+      stop()
+      void recycleEngineIfNeeded()
+    },
   )
 
   onBeforeUnmount(() => stop())

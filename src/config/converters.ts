@@ -241,17 +241,38 @@ export function getConverterByPath(path: string): ConverterConfig | undefined {
   return CONVERTERS.find((item) => item.path === path)
 }
 
-/** 某个音频编码器可用的码率档位（按上限过滤；视频/无损不参与） */
+/**
+ * 视频编码器的 CRF 下限。FFmpeg 的 libvpx（VP8）-crf 合法范围是 4-63，
+ * 界面上 0-3 档给它会在初始化阶段直接报 Invalid value for crf；
+ * 按编码器约束过滤选项，而不是等到参数组装时再默默夹取。
+ */
+const VIDEO_ENCODER_MIN_CRF: Record<string, number> = {
+  libvpx: 4,
+}
+
+/**
+ * 某个编码器可用的质量档位：
+ * - 音频：按编码器最低码率过滤（如 wmav1/wmav2 ≥ 24k、ac3 ≥ 32k）；
+ * - 视频：按编码器 CRF 下限过滤（如 libvpx ≥ 4）。
+ * 过滤发生在选项生成处，用户根本选不到「选了就一定失败」的档位。
+ */
 export function qualitiesForEncoder(
   converter: ConverterConfig,
   encoder: string,
 ): string[] {
-  if (converter.to !== 'Audio') return converter.qualities
-  const min = AUDIO_ENCODER_MIN_KBPS[encoder] ?? 0
-  if (min <= 0) return converter.qualities
-  return converter.qualities.filter(
-    (quality) => Number.parseInt(quality, 10) >= min,
-  )
+  if (converter.to === 'Audio') {
+    const min = AUDIO_ENCODER_MIN_KBPS[encoder] ?? 0
+    if (min <= 0) return converter.qualities
+    return converter.qualities.filter(
+      (quality) => Number.parseInt(quality, 10) >= min,
+    )
+  }
+  const minCrf = VIDEO_ENCODER_MIN_CRF[encoder] ?? 0
+  if (minCrf <= 0) return converter.qualities
+  return converter.qualities.filter((quality) => {
+    const match = /CRF\s+(\d+)/i.exec(quality)
+    return match ? Number.parseInt(match[1], 10) >= minCrf : true
+  })
 }
 
 /** 换编码器/格式后把码率档位夹到有效范围内（保持不低于原档位） */

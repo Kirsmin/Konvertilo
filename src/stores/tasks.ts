@@ -85,7 +85,7 @@ export const useTasksStore = defineStore('tasks', () => {
       if (!encoders.includes(task.encoder)) {
         task.encoder = encoders[0] ?? task.encoder
       }
-      // 编码器变了，码率档位要落回该编码器支持的范围（如 libvorbis 最低 32k）
+      // 编码器变了，质量档位要落回该编码器支持的范围（如 libvorbis 双声道最低 48k）
       task.quality = clampQualityForEncoder(converter, task.encoder, task.quality)
     }
   }

@@ -6,6 +6,7 @@ import { CONVERTERS } from '../config/converters'
 import type { ConverterConfig } from '../types'
 import { useFlash } from '../composables/useFlash'
 import { useFFmpeg } from '../composables/useFFmpeg'
+import { useTasksStore } from '../stores/tasks'
 import { useUiStore } from '../stores/ui'
 import { copyText } from '../utils/format'
 import HistoryPopover from './HistoryPopover.vue'
@@ -16,11 +17,32 @@ const props = defineProps<{
 
 const router = useRouter()
 const ui = useUiStore()
+const tasksStore = useTasksStore()
 const { status, progress, done, total, failed, histOpen } = storeToRefs(ui)
-const { state: engineState, download } = useFFmpeg()
+const { state: engineState, download, cancelEngineLoad } = useFFmpeg()
 
 /** 引擎是否已就绪：首屏还没加载核心时不要谎报「准备就绪」 */
 const engineReady = computed(() => engineState.value === 'ready')
+
+/** 当前转换器的待转换任务数：驱动头部「任务」按钮的实线态与计数 */
+const pendingCount = computed(() => tasksStore.forPath(props.converter.path).length)
+
+/** 点「任务」回到输入区：任务队列都在那里 */
+function scrollToTasks() {
+  document
+    .getElementById('inHead')
+    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+/**
+ * 页面是否处于跨源隔离（COOP/COEP）。未隔离时 SharedArrayBuffer 不可用，
+ * 引擎会静默降级单线程（实测慢约一半），这里必须显式告诉用户原因，
+ * 而不是只在脚注里埋一句「单线程」。
+ */
+const crossOriginIsolated =
+  typeof SharedArrayBuffer !== 'undefined' &&
+  (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true
+const isoNoticeDismissed = ref(false)
 
 /** 错误日志默认折叠：首行说人话，原始日志需要时再展开 */
 const showErrorLog = ref(false)
@@ -67,9 +89,32 @@ onBeforeUnmount(() => {
 const elapsed = computed(() =>
   ui.startedAt ? Math.max(0, Math.round((now.value - ui.startedAt) / 1000)) : 0,
 )
+/**
+ * 剩余时间估算基于「整批累加进度」：elapsed * (100-p) / p。
+ * 进度在多文件批处理时按 (已完成 + 当前文件进度)/总数 累加、不回零，
+ * 因此该外推对整批成立；若进度仍按单文件归零，elapsed 里却累积了
+ * 前面所有文件的时间，估算会系统性偏差约一个数量级。
+ */
 const eta = computed(() => {
-  if (status.value !== 'processing' || progress.value < 5) return 0
+  if (status.value !== 'processing' || progress.value < 2) return 0
   return Math.round((elapsed.value * (100 - progress.value)) / progress.value)
+})
+
+/**
+ * 读屏播报文本：与视觉状态分离并做粗粒度节流（下载按 25%、处理按 10%
+ * 与完成数取整），避免 aria-live 区随每秒计时/每个进度百分点反复播报。
+ */
+const liveText = computed(() => {
+  switch (status.value) {
+    case 'downloading':
+      return `下载引擎中，${Math.floor(progress.value / 25) * 25}%`
+    case 'processing':
+      return `处理中 ${done.value}/${total.value}，进度 ${Math.floor(progress.value / 10) * 10}%`
+    case 'error':
+      return `转换出错：${errorHead.value}`
+    default:
+      return engineReady.value ? '准备就绪' : '等待选择文件'
+  }
 })
 
 function clock(seconds: number): string {
@@ -178,6 +223,13 @@ function onDocumentClick(event: MouseEvent) {
   }
 }
 
+/** Esc 关闭任何浮层（类型菜单 / 历史弹层），符合键盘操作预期 */
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  openMenu.value = null
+  histOpen.value = false
+}
+
 watch(
   () => props.converter.path,
   () => {
@@ -188,10 +240,12 @@ watch(
 
 onMounted(() => {
   document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onDocumentKeydown)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onDocumentKeydown)
 })
 </script>
 
@@ -246,7 +300,7 @@ onBeforeUnmount(() => {
           </button>
           <div
             v-if="openMenu === 'to'"
-            class="type-menu"
+            class="type-menu align-right"
             role="menu"
             aria-label="选择目标类型"
           >
@@ -268,7 +322,8 @@ onBeforeUnmount(() => {
       </span>
     </h1>
 
-    <div class="status" aria-live="polite">
+    <div class="status">
+      <span class="sr-only" aria-live="polite">{{ liveText }}</span>
       <template v-if="status === 'idle'">
         <template v-if="engineReady">
           <span class="ok">✓</span> 准备就绪
@@ -285,6 +340,7 @@ onBeforeUnmount(() => {
         <span class="bar" :class="{ moving: download.indeterminate }">
           <i :style="download.indeterminate ? undefined : { width: `${progress}%` }"></i>
         </span>
+        <button type="button" class="btn" @click="cancelEngineLoad">取消下载</button>
       </template>
       <template v-else-if="status === 'error'">
         <span class="er">✗</span> 错误
@@ -299,9 +355,41 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <div ref="histWrap" class="hist-wrap" :class="{ open: histOpen }">
-      <button type="button" class="btn" @click="toggleHistory">历史</button>
-      <HistoryPopover v-if="histOpen" />
+    <div class="head-actions">
+      <button
+        type="button"
+        class="btn task-btn"
+        :class="{ solid: pendingCount > 0 }"
+        title="待转换任务，点击回到输入区"
+        @click="scrollToTasks"
+      >
+        任务<template v-if="pendingCount > 0">
+          <span class="task-count">×{{ pendingCount }}</span>
+        </template>
+      </button>
+      <div ref="histWrap" class="hist-wrap" :class="{ open: histOpen }">
+        <button type="button" class="btn" @click="toggleHistory">历史</button>
+        <HistoryPopover v-if="histOpen" />
+      </div>
+    </div>
+
+    <div
+      v-if="!crossOriginIsolated && !isoNoticeDismissed"
+      class="warnbox isobox"
+    >
+      <div class="warnhead">
+        <span>提示</span>
+        <button
+          type="button"
+          class="btn warnclose"
+          title="关闭提示"
+          aria-label="关闭提示"
+          @click="isoNoticeDismissed = true"
+        >
+          ✗
+        </button>
+      </div>
+      <pre class="warnbody">当前连接未启用跨源隔离，无法使用多线程编码，已自动切换为单线程，转换速度约为多线程的一半。站点通过 HTTPS 并提供 COOP/COEP 响应头后即可恢复全速。</pre>
     </div>
 
     <div v-if="status === 'error' && ui.errorText" class="errbox" role="alert">
@@ -397,6 +485,23 @@ onBeforeUnmount(() => {
   border-bottom: 1px dashed var(--dash);
 }
 
+/* 移动端：类型切换按钮同样是触控目标，命中区外扩（底部只扩 4px，
+   避免盖住下方 5px 处弹出的菜单） */
+@media (max-width: 720px) {
+  .type-btn {
+    position: relative;
+  }
+
+  .type-btn::after {
+    content: '';
+    position: absolute;
+    left: -10px;
+    right: -10px;
+    top: -10px;
+    bottom: -4px;
+  }
+}
+
 .type-btn:hover,
 .type-btn.active {
   color: var(--accent);
@@ -415,12 +520,21 @@ onBeforeUnmount(() => {
   width: max-content;
   min-width: 76px;
   max-width: calc(100vw - 44px);
+  /* 小屏上菜单可能被视口底部裁掉：限高 + 内部滚动 */
+  max-height: min(60vh, 320px);
+  overflow-y: auto;
   background: var(--card);
   border: 1px solid var(--line);
   padding: 2px;
   z-index: 70;
   text-align: left;
   font-weight: 400;
+}
+
+/* 靠右打开的菜单（目标类型切换）右对齐，避免在窄屏上溢出视口右侧被遮挡 */
+.type-menu.align-right {
+  left: auto;
+  right: 0;
 }
 
 .type-menu ul {
@@ -586,12 +700,43 @@ onBeforeUnmount(() => {
 }
 
 .hist-wrap {
-  justify-self: end;
   position: relative;
 }
 
 .hist-wrap.open > .btn {
   border-bottom-style: solid;
+}
+
+/* 头部右侧：任务 + 历史 */
+.head-actions {
+  justify-self: end;
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+}
+
+/* 有任务时虚线变实线；计数用灰字 */
+.task-btn.solid {
+  border-bottom-style: solid;
+}
+
+.task-count {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+/* 只供读屏的直播播报区 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (min-width: 721px) {
@@ -627,6 +772,10 @@ onBeforeUnmount(() => {
     justify-content: space-between;
     row-gap: 2px;
     padding-bottom: 10px;
+  }
+
+  .head-actions {
+    gap: 10px;
   }
 
   .status {
